@@ -160,7 +160,7 @@ def main() -> None:
             metrics_dataframe(analysis.metrics, company.currency),
             use_container_width=True,
             hide_index=True,
-            height=420,
+            height=620,
         )
 
     with tab3:

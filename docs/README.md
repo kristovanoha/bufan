@@ -19,3 +19,12 @@ Má zobrazovat pouze reálná finanční data získaná z Yahoo Finance přes kn
 - Soubor `BUFFETT_ANALYZER_SPEC.md` je hlavní zadání pro implementaci.
 - Tento `README.md` stručně vysvětluje účel projektu a základní pravidla.
 - Další návrhové nebo technické dokumenty je vhodné ukládat sem, aby byly oddělené od zdrojového kódu.
+
+
+
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+
+spusteni projektu
+
+.\.venv\Scripts\streamlit run app.py
