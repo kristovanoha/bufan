@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
+from threading import Lock, Thread
 from pathlib import Path
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from analyzer import analyze_company
 from company_loader import load_companies
@@ -69,6 +71,25 @@ def metric_caption(title: str, body: str) -> None:
     st.markdown(f"**{title}**  \n{body}")
 
 
+def ensure_session_state() -> None:
+    st.session_state.setdefault("single_analysis", None)
+    st.session_state.setdefault("single_ticker", "")
+
+
+@st.cache_resource
+def get_batch_state() -> dict:
+    return {
+        "lock": Lock(),
+        "running": False,
+        "results": [],
+        "total": 0,
+        "done": 0,
+        "status": "",
+        "updated_at": "",
+        "error": None,
+    }
+
+
 def build_batch_row(analysis) -> dict[str, str]:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
@@ -78,123 +99,173 @@ def build_batch_row(analysis) -> dict[str, str]:
     if current_price is not None and buy_under_price is not None and current_price != 0:
         upside_pct = ((buy_under_price - current_price) / current_price) * 100
         price_gap = f"{upside_pct:.2f} %"
-        valuation = "Pod nákupní cenou" if buy_under_price >= current_price else "Nad nákupní cenou"
+        valuation = "Pod nakupni cenou" if buy_under_price >= current_price else "Nad nakupni cenou"
     else:
         price_gap = "N/A"
         valuation = "N/A"
 
     score_text = "N/A" if analysis.score is None else f"{analysis.score}/{analysis.max_score}"
-    if valuation == "Pod nákupní cenou" and analysis.score is not None and analysis.score / analysis.max_score >= 0.75:
-        signal = "Silný kandidát"
-    elif valuation == "Pod nákupní cenou":
-        signal = "Levné, prověřit kvalitu"
+    if valuation == "Pod nakupni cenou" and analysis.score is not None and analysis.score / analysis.max_score >= 0.75:
+        signal = "Silny kandidat"
+    elif valuation == "Pod nakupni cenou":
+        signal = "Levne, proverit kvalitu"
     elif analysis.score is not None and analysis.score / analysis.max_score >= 0.75:
-        signal = "Kvalitní, čekat na cenu"
+        signal = "Kvalitni, cekat na cenu"
     else:
         signal = "Sledovat"
 
     return {
         "Ticker": company.ticker,
         "Firma": company.company_name,
-        "Aktuální cena": format_value(current_price, "currency_decimal", company.currency),
-        "Vnitřní hodnota": format_value(intrinsic_value, "currency_decimal", company.currency),
-        "Nákupní cena": format_value(buy_under_price, "currency_decimal", company.currency),
+        "Aktualni cena": format_value(current_price, "currency_decimal", company.currency),
+        "Vnitrni hodnota": format_value(intrinsic_value, "currency_decimal", company.currency),
+        "Nakupni cena": format_value(buy_under_price, "currency_decimal", company.currency),
         "Buffett Score": score_text,
-        "Signál": signal,
+        "Signal": signal,
         "Valuace": valuation,
-        "Rozdíl k nákupní ceně": price_gap,
-        "Varování": str(len(analysis.warnings)),
+        "Rozdil k nakupni cene": price_gap,
+        "Varovani": str(len(analysis.warnings)),
     }
 
 
 def style_batch_results(frame: pd.DataFrame):
     def row_style(row):
-        if row.get("Valuace") == "Pod nákupní cenou":
+        if row.get("Valuace") == "Pod nakupni cenou":
             return ["background-color: #eef9f0; color: #000000"] * len(row)
         return [""] * len(row)
 
     return frame.style.apply(row_style, axis=1)
 
 
-def main() -> None:
-    st.title("Buffett Analyzer")
-    st.caption("Osobní fundamentální analýza USA akcií inspirovaná principy Warrena Buffetta.")
+def build_failed_batch_row(company, error: Exception) -> dict[str, str]:
+    return {
+        "Ticker": company.ticker,
+        "Firma": company.name,
+        "Aktualni cena": "N/A",
+        "Vnitrni hodnota": "N/A",
+        "Nakupni cena": "N/A",
+        "Buffett Score": "N/A",
+        "Signal": "Chyba analyzy",
+        "Valuace": "N/A",
+        "Rozdil k nakupni cene": "N/A",
+        "Varovani": f"1: {error}",
+    }
 
-    companies = load_companies(Path(__file__).with_name("companies.txt"))
-    company_options = {f"{company.ticker} - {company.name}": company.ticker for company in companies}
 
-    with st.sidebar:
-        st.header("Výběr akcie")
-        selected_label = st.selectbox(
-            "Vyber firmu ze seznamu",
-            options=list(company_options.keys()) if company_options else [],
-            index=0 if company_options else None,
-            placeholder="Nejprve doplň companies.txt",
-        )
-        manual_ticker = st.text_input("Nebo zadej ticker ručně", placeholder="Např. AAPL").strip().upper()
-        analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
-        analyze_all_clicked = st.button("Analyzovat vše", use_container_width=True)
-        st.markdown("---")
-        st.info("Zdroj dat: Yahoo Finance přes knihovnu yfinance.")
+def start_batch_analysis(companies) -> bool:
+    state = get_batch_state()
+    with state["lock"]:
+        if state["running"]:
+            return False
+        state["running"] = True
+        state["results"] = []
+        state["total"] = len(companies)
+        state["done"] = 0
+        state["status"] = "Pripravuji analyzu..."
+        state["updated_at"] = ""
+        state["error"] = None
 
-    selected_ticker = manual_ticker or company_options.get(selected_label, "")
+    def worker() -> None:
+        try:
+            for index, company in enumerate(companies, start=1):
+                with state["lock"]:
+                    state["status"] = f"Analyzuji {company.ticker}..."
 
-    if analyze_all_clicked:
-        if not companies:
-            st.warning("Seznam firem je prázdný. Nejprve doplň `companies.txt`.")
-            return
+                try:
+                    snapshot = load_company_snapshot(company.ticker)
+                    analysis = analyze_company(snapshot)
+                    row = build_batch_row(analysis)
+                except Exception as exc:
+                    row = build_failed_batch_row(company, exc)
 
-        st.subheader("Hromadná analýza seznamu")
-        st.caption("Tabulka se doplňuje postupně podle toho, jak dobíhá analýza jednotlivých firem.")
+                with state["lock"]:
+                    state["results"].append(row)
+                    state["done"] = index
 
-        progress_bar = st.progress(0, text="Připravuji analýzu...")
-        status_placeholder = st.empty()
-        table_placeholder = st.empty()
-        results: list[dict[str, str]] = []
+            with state["lock"]:
+                state["running"] = False
+                state["status"] = "Hromadna analyza dokoncena."
+                state["updated_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")
+        except Exception as exc:
+            with state["lock"]:
+                state["running"] = False
+                state["error"] = str(exc)
+                state["status"] = "Hromadna analyza se zastavila."
 
-        for index, company in enumerate(companies, start=1):
-            status_placeholder.write(f"Analyzuji `{company.ticker}`...")
-            snapshot = load_company_snapshot(company.ticker)
-            analysis = analyze_company(snapshot)
-            results.append(build_batch_row(analysis))
-            results_frame = pd.DataFrame(results)
+    Thread(target=worker, daemon=True).start()
+    return True
 
-            table_placeholder.dataframe(
-                style_batch_results(results_frame),
-                use_container_width=True,
-                hide_index=True,
-                height=900,
-            )
-            progress_bar.progress(
-                index / len(companies),
-                text=f"Hotovo {index}/{len(companies)} firem",
-            )
 
-        status_placeholder.success("Hromadná analýza dokončena.")
-        return
+def render_score_explanation() -> None:
+    st.subheader("Jak cist Buffett Score")
+    st.write(
+        "Buffett Score v teto aplikaci neni oficialni Buffettuv ukazatel. "
+        "Je to prakticky kontrolni seznam, ktery prevadi Buffettovy principy "
+        "do nekolika srozumitelnych bodu nad daty z Yahoo Finance."
+    )
 
-    if not selected_ticker:
-        st.warning("Vyber ticker ze seznamu nebo ho zadej ručně.")
-        return
+    st.markdown(
+        "Kazdy bod odpovida jedne otazce:\n"
+        "- Je firma ziskova a kapitalove silna?\n"
+        "- Ma rozumne zadluzeni?\n"
+        "- Premenuje ucetni zisk na skutecnou hotovost?\n"
+        "- Roste aspon opatrne smysluplnym tempem?\n"
+        "- Neni jeji aktualni cena prilis vysoko oproti odhadovane vnitrni hodnote?"
+    )
 
-    if not analyze_clicked:
-        st.write("Aplikace je připravená. Klikni na `Analyzovat` pro načtení dat.")
-        return
+    st.subheader("Jednotlive body skore")
+    checks = [
+        ("ROE >= 15 %", "Firma umi dobre vydelavat na vlastnim kapitalu. Vyssi ROE casto znaci kvalitni byznys."),
+        ("Debt/Equity <= 100", "Dluh neni prehnany vuci vlastnimu kapitalu. Buffett ma obecne rad firmy, ktere nejsou zavisle na vysokem zadluzeni."),
+        ("Operating Margin >= 15 %", "Byznys ma slusnou provozni marzi. To naznacuje cenovou silu nebo efektivni provoz."),
+        ("Net Margin >= 10 %", "Firma si z trzeb nechava rozumnou cast jako cisty zisk."),
+        ("Free Cash Flow > 0", "Podnik vytvari skutecnou volnou hotovost, nejen ucetni zisk."),
+        ("FCF / Net Income >= 75 %", "Zisk se ve velke mire meni v hotovost. To je dulezite, protoze papirovy zisk bez cash flow muze byt slabsi kvality."),
+        ("Conservative growth >= 0 %", "Konzervativni rust pouzity v DCF neni zaporny. Nehledame prestreleny optimismus, ale nechceme ani byznys v zjevne erozi."),
+        ("Current price <= buy-under price", "Aktualni cena je pod bezpecnou nakupni cenou. Tady se spojuje kvalita firmy a cenova disciplina."),
+    ]
 
-    with st.spinner(f"Načítám data pro {selected_ticker}..."):
-        snapshot = load_company_snapshot(selected_ticker)
-        analysis = analyze_company(snapshot)
+    for title, body in checks:
+        metric_caption(title, body)
 
+    st.subheader("Jak vznika vysledne cislo")
+    st.write(
+        "Skore se pocita jen z bodu, pro ktere mame dostupna data. "
+        "Kdyz nektera data chybi, aplikace je nevymysli, ale dany bod proste nehodnoti. "
+        "Proto muzes videt treba `6/8`, `5/7` nebo `4/6`."
+    )
+
+    st.subheader("Jak cist verdikt")
+    verdicts = [
+        ("Silny Buffett-style profil", "Firma splnila vetsinu dostupnych kvalitativnich i cenovych podminek."),
+        ("Kvalitni, cekat na cenu", "Byznys vypada dobre, ale aktualni cena je nad bezpecnou nakupni hranici."),
+        ("Dobry Buffett-style profil", "Firma ma vic pozitiv nez negativ, ale neni to uplne cisty kandidat."),
+        ("Smiseny Buffett-style profil", "Nektere veci vypadaji dobre a jine uz mene presvedcive."),
+        ("Slabsi Buffett-style profil", "Firma podle dostupnych dat neodpovida moc dobre konzervativnimu Buffett-style filtru."),
+    ]
+
+    for title, body in verdicts:
+        metric_caption(title, body)
+
+    st.subheader("Dulezita poznamka")
+    st.write(
+        "Vysoke skore samo o sobe neznamena automaticky koupit. "
+        "Je to filtr, ktery ma pomoct rychle oddelit silnejsi kandidaty od slabsich. "
+        "Finalni rozhodnuti by melo vzdy zohlednit i byznys model firmy, odvetvi, konkurencni vyhodu a tvoji vlastni investicni strategii."
+    )
+
+
+def render_single_analysis(analysis) -> None:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
     intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
     buy_under_price = getattr(company, "buy_under_price", None)
     hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
-    hero1.metric("Společnost", company.company_name)
+    hero1.metric("Spolecnost", company.company_name)
     hero2.metric("Ticker", company.ticker)
-    hero3.metric("Aktuální cena", format_value(current_price, "currency_decimal", company.currency))
-    hero4.metric("Vnitřní hodnota", format_value(intrinsic_value, "currency_decimal", company.currency))
-    hero5.metric("Nákupní cena", format_value(buy_under_price, "currency_decimal", company.currency))
+    hero3.metric("Aktualni cena", format_value(current_price, "currency_decimal", company.currency))
+    hero4.metric("Vnitrni hodnota", format_value(intrinsic_value, "currency_decimal", company.currency))
+    hero5.metric("Nakupni cena", format_value(buy_under_price, "currency_decimal", company.currency))
     hero6.metric(
         "Buffett Score",
         "N/A" if analysis.score is None else f"{analysis.score}/{analysis.max_score}",
@@ -202,26 +273,26 @@ def main() -> None:
     )
 
     info1, info2, info3, info4 = st.columns(4)
-    info1.metric("Měna", company.currency or "N/A")
+    info1.metric("Mena", company.currency or "N/A")
     info2.metric("Sektor", company.sector or "N/A")
-    info3.metric("Odvětví", company.industry or "N/A")
+    info3.metric("Odvetvi", company.industry or "N/A")
     info4.metric("Market Cap", format_value(company.market_cap, "currency", company.currency))
 
     st.markdown(
-        "<p class='compact-note'>Vnitřní hodnota je owner earnings DCF z Free Cash Flow. "
-        "Nákupní cena je vnitřní hodnota snížená o 25% margin of safety. "
-        "Nejde o investiční doporučení a při chybějících datech se zobrazí N/A.</p>",
+        "<p class='compact-note'>Vnitrni hodnota je owner earnings DCF z Free Cash Flow. "
+        "Nakupni cena je vnitrni hodnota snizena o 25% margin of safety. "
+        "Nejde o investicni doporuceni a pri chybejicich datech se zobrazi N/A.</p>",
         unsafe_allow_html=True,
     )
 
     if analysis.warnings:
-        with st.expander(f"Varování a chybějící data ({len(analysis.warnings)})", expanded=False):
+        with st.expander(f"Varovani a chybejici data ({len(analysis.warnings)})", expanded=False):
             for warning in analysis.warnings:
                 st.warning(warning)
 
-    tab1, tab2, tab3 = st.tabs(["Přehled", "Metriky", "Metodika"])
+    overview_tab, metrics_tab = st.tabs(["Prehled", "Metriky"])
 
-    with tab1:
+    with overview_tab:
         a1, a2, a3, a4 = st.columns(4)
         metric_map = {metric.label: metric for metric in analysis.metrics}
         a1.metric("ROE", format_value(metric_map["ROE"].value, "percent", company.currency))
@@ -230,16 +301,16 @@ def main() -> None:
         a4.metric("Free Cash Flow", format_value(metric_map["Free Cash Flow"].value, "currency", company.currency))
         b1, b2 = st.columns(2)
         with b1:
-            metric_caption("ROE", "Výnosnost vlastního kapitálu. Vyšší a stabilní hodnota obvykle značí kvalitní byznys.")
-            metric_caption("Debt/Equity", "Poměr dluhu k vlastnímu kapitálu. Nižší hodnota obvykle znamená menší zadlužení.")
-            metric_caption("Operating Margin", "Jak velká část tržeb zůstane po provozních nákladech. Vyšší marže značí silnější byznys.")
+            metric_caption("ROE", "Vynosnost vlastniho kapitalu. Vyssi a stabilni hodnota obvykle znaci kvalitni byznys.")
+            metric_caption("Debt/Equity", "Pomer dluhu k vlastnimu kapitalu. Nizsi hodnota obvykle znamena mensi zadluzeni.")
+            metric_caption("Operating Margin", "Jak velka cast trzeb zustane po provoznich nakladech. Vyssi marze znaci silnejsi byznys.")
         with b2:
-            metric_caption("Free Cash Flow", "Hotovost, která firmě zbude po provozu a investicích. Pro dlouhodobou kvalitu je důležitá.")
-            metric_caption("Trailing P/E", "Poměr aktuální ceny akcie k historickému zisku na akcii.")
-            metric_caption("Nákupní cena", "Vnitřní hodnota snížená o 25% margin of safety. Zelená v hromadné tabulce znamená, že cena je pod touto hranicí.")
+            metric_caption("Free Cash Flow", "Hotovost, ktera firme zbude po provozu a investicich. Pro dlouhodobou kvalitu je dulezita.")
+            metric_caption("Trailing P/E", "Pomer aktualni ceny akcie k historickemu zisku na akcii.")
+            metric_caption("Nakupni cena", "Vnitrni hodnota snizena o 25% margin of safety. Zelena v hromadne tabulce znamena, ze cena je pod touto hranici.")
         st.write(analysis.summary)
 
-    with tab2:
+    with metrics_tab:
         st.dataframe(
             metrics_dataframe(analysis.metrics, company.currency),
             use_container_width=True,
@@ -247,14 +318,109 @@ def main() -> None:
             height=620,
         )
 
-    with tab3:
-        st.markdown(
-            "- Aplikace používá pouze data z Yahoo Finance přes `yfinance`.\n"
-            "- Chybějící hodnoty nejsou domýšlené a zobrazují se jako `N/A`.\n"
-            "- Vnitřní hodnota je owner earnings DCF z Free Cash Flow, růstu, hotovosti, dluhu a počtu akcií.\n"
-            "- Nákupní cena je vnitřní hodnota snížená o 25% margin of safety.\n"
-            "- Buffett Score kombinuje kvalitu firmy, hotovostní sílu, rozumné zadlužení a cenovou disciplínu."
+
+def read_batch_state() -> dict:
+    state = get_batch_state()
+    with state["lock"]:
+        return {
+            "running": state["running"],
+            "results": list(state["results"]),
+            "total": state["total"],
+            "done": state["done"],
+            "status": state["status"],
+            "updated_at": state["updated_at"],
+            "error": state["error"],
+        }
+
+
+def render_batch_analysis() -> None:
+    state = read_batch_state()
+    results = state["results"]
+    updated_at = state["updated_at"]
+
+    st.subheader("Hromadna analyza seznamu")
+    if state["running"]:
+        total = max(state["total"], 1)
+        st.progress(state["done"] / total, text=f"{state['status']} Hotovo {state['done']}/{state['total']}.")
+        st.info("Hromadna analyza bezi na pozadi. Muzes prepnout na analyzu jedne firmy a batch bude pokracovat.")
+    if state["error"]:
+        st.warning(state["error"])
+    if updated_at:
+        st.caption(f"Posledni dokoncena hromadna analyza: {updated_at}")
+    if not results:
+        st.info("Zatim tu neni hromadna analyza. Klikni vlevo na `Analyzovat vse`.")
+        if state["running"]:
+            time.sleep(2)
+            st.rerun()
+        return
+
+    st.dataframe(
+        style_batch_results(pd.DataFrame(results)),
+        use_container_width=True,
+        hide_index=True,
+        height=900,
+    )
+
+    if state["running"]:
+        time.sleep(2)
+        st.rerun()
+
+
+def main() -> None:
+    st.title("Buffett Analyzer")
+    st.caption("Osobni fundamentalni analyza USA akcii inspirovana principy Warrena Buffetta.")
+    ensure_session_state()
+
+    companies = load_companies(Path(__file__).with_name("companies.txt"))
+    company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
+
+    with st.sidebar:
+        st.header("Vyber akcie")
+        selected_label = st.selectbox(
+            "Vyber firmu ze seznamu",
+            options=list(company_options.keys()) if company_options else [],
+            index=0 if company_options else None,
+            placeholder="Nejprve dopln companies.txt",
         )
+        manual_ticker = st.text_input("Nebo zadej ticker rucne", placeholder="Napr. AAPL").strip().upper()
+        analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
+        analyze_all_clicked = st.button("Analyzovat vse", use_container_width=True)
+        st.markdown("---")
+        st.info("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
+
+    selected_ticker = manual_ticker or company_options.get(selected_label, "")
+    main_tab, batch_tab, score_tab = st.tabs(["Analyza firmy", "Hromadna analyza", "Jak funguje Buffett Score"])
+
+    with main_tab:
+        if analyze_clicked:
+            if not selected_ticker:
+                st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
+            else:
+                with st.spinner(f"Nacitam data pro {selected_ticker}..."):
+                    snapshot = load_company_snapshot(selected_ticker)
+                    st.session_state.single_analysis = analyze_company(snapshot)
+                    st.session_state.single_ticker = selected_ticker
+
+        if st.session_state.single_analysis is None:
+            st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vlevo a klikni na `Analyzovat`.")
+        else:
+            render_single_analysis(st.session_state.single_analysis)
+
+    with batch_tab:
+        if analyze_all_clicked:
+            if not companies:
+                st.warning("Seznam firem je prazdny. Nejprve dopln `companies.txt`.")
+            else:
+                started = start_batch_analysis(companies)
+                if started:
+                    st.success("Hromadna analyza se spustila na pozadi.")
+                else:
+                    st.info("Hromadna analyza uz bezi.")
+
+        render_batch_analysis()
+
+    with score_tab:
+        render_score_explanation()
 
 
 if __name__ == "__main__":

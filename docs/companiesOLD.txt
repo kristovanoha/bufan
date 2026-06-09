@@ -1,0 +1,34 @@
+# Ticker | Company name
+AAPL | Apple Inc.
+AMD | Advanced Micro Devices, Inc.
+AMZN | Amazon.com, Inc.
+ASML | ASML Holding N.V.
+ATVI | Activision Blizzard, Inc.
+AXP | American Express Company
+BA | The Boeing Company
+BRK-B | Berkshire Hathaway Inc.
+CNDX.L
+CVX | Chevron Corporation
+GOOG | Alphabet Inc.
+GOOGL | Alphabet Inc.
+INTC | Intel Corporation
+JNJ | Johnson & Johnson
+KO | The Coca-Cola Company
+LMT | Lockheed Martin Corporation
+LVMUY | LVMH Moet Hennessy Louis Vuitton SE
+MCD | McDonald's Corporation
+MMM | 3M Company
+MSFT | Microsoft Corporation
+NVO | Novo Nordisk A/S
+PG | Procter & Gamble Co.
+PII | Polaris Inc.
+PYPL | PayPal Holdings, Inc.
+RHM.DE
+STNE | StoneCo Ltd.
+SXR8.DE
+TSMC34.SA
+TXN | Texas Instruments Incorporated
+V | Visa Inc.
+VWRA.L
+VZ | Verizon Communications Inc.
+WMT | Walmart Inc.
