@@ -69,6 +69,42 @@ def metric_caption(title: str, body: str) -> None:
     st.markdown(f"**{title}**  \n{body}")
 
 
+def build_batch_row(analysis) -> dict[str, str]:
+    company = analysis.company
+    current_price = getattr(company, "current_price", None)
+    fair_price = getattr(company, "buy_under_price", None)
+
+    if current_price is not None and fair_price is not None and current_price != 0:
+        upside_pct = ((fair_price - current_price) / current_price) * 100
+        price_gap = f"{upside_pct:.2f} %"
+        valuation = "Pod férovou cenou" if fair_price >= current_price else "Nad férovou cenou"
+    else:
+        price_gap = "N/A"
+        valuation = "N/A"
+
+    score_text = "N/A" if analysis.score is None else f"{analysis.score}/{analysis.max_score}"
+
+    return {
+        "Ticker": company.ticker,
+        "Company": company.company_name,
+        "Current Price": format_value(current_price, "currency_decimal", company.currency),
+        "Fair Buy Price": format_value(fair_price, "currency_decimal", company.currency),
+        "Buffett Score": score_text,
+        "Valuation": valuation,
+        "Gap to Fair Price": price_gap,
+        "Warnings": str(len(analysis.warnings)),
+    }
+
+
+def style_batch_results(frame: pd.DataFrame):
+    def row_style(row):
+        if row.get("Valuation") == "Pod férovou cenou":
+            return ["background-color: #eef9f0; color: #000000"] * len(row)
+        return [""] * len(row)
+
+    return frame.style.apply(row_style, axis=1)
+
+
 def main() -> None:
     st.title("Buffett Analyzer")
     st.caption("Osobní fundamentální analýza USA akcií inspirovaná principy Warrena Buffetta.")
@@ -86,10 +122,45 @@ def main() -> None:
         )
         manual_ticker = st.text_input("Nebo zadej ticker ručně", placeholder="Např. AAPL").strip().upper()
         analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
+        analyze_all_clicked = st.button("Analyzovat vše", use_container_width=True)
         st.markdown("---")
         st.info("Zdroj dat: Yahoo Finance přes knihovnu yfinance.")
 
     selected_ticker = manual_ticker or company_options.get(selected_label, "")
+
+    if analyze_all_clicked:
+        if not companies:
+            st.warning("Seznam firem je prázdný. Nejprve doplň `companies.txt`.")
+            return
+
+        st.subheader("Hromadná analýza seznamu")
+        st.caption("Tabulka se doplňuje postupně podle toho, jak dobíhá analýza jednotlivých firem.")
+
+        progress_bar = st.progress(0, text="Připravuji analýzu...")
+        status_placeholder = st.empty()
+        table_placeholder = st.empty()
+        results: list[dict[str, str]] = []
+
+        for index, company in enumerate(companies, start=1):
+            status_placeholder.write(f"Analyzuji `{company.ticker}`...")
+            snapshot = load_company_snapshot(company.ticker)
+            analysis = analyze_company(snapshot)
+            results.append(build_batch_row(analysis))
+            results_frame = pd.DataFrame(results)
+
+            table_placeholder.dataframe(
+                style_batch_results(results_frame),
+                use_container_width=True,
+                hide_index=True,
+                height=620,
+            )
+            progress_bar.progress(
+                index / len(companies),
+                text=f"Hotovo {index}/{len(companies)} firem",
+            )
+
+        status_placeholder.success("Hromadná analýza dokončena.")
+        return
 
     if not selected_ticker:
         st.warning("Vyber ticker ze seznamu nebo ho zadej ručně.")
