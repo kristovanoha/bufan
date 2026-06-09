@@ -152,7 +152,7 @@ def main() -> None:
                 style_batch_results(results_frame),
                 use_container_width=True,
                 hide_index=True,
-                height=620,
+                height=900,
             )
             progress_bar.progress(
                 index / len(companies),
