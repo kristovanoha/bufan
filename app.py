@@ -72,33 +72,44 @@ def metric_caption(title: str, body: str) -> None:
 def build_batch_row(analysis) -> dict[str, str]:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
-    fair_price = getattr(company, "buy_under_price", None)
+    intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
+    buy_under_price = getattr(company, "buy_under_price", None)
 
-    if current_price is not None and fair_price is not None and current_price != 0:
-        upside_pct = ((fair_price - current_price) / current_price) * 100
+    if current_price is not None and buy_under_price is not None and current_price != 0:
+        upside_pct = ((buy_under_price - current_price) / current_price) * 100
         price_gap = f"{upside_pct:.2f} %"
-        valuation = "Pod férovou cenou" if fair_price >= current_price else "Nad férovou cenou"
+        valuation = "Pod nákupní cenou" if buy_under_price >= current_price else "Nad nákupní cenou"
     else:
         price_gap = "N/A"
         valuation = "N/A"
 
     score_text = "N/A" if analysis.score is None else f"{analysis.score}/{analysis.max_score}"
+    if valuation == "Pod nákupní cenou" and analysis.score is not None and analysis.score / analysis.max_score >= 0.75:
+        signal = "Silný kandidát"
+    elif valuation == "Pod nákupní cenou":
+        signal = "Levné, prověřit kvalitu"
+    elif analysis.score is not None and analysis.score / analysis.max_score >= 0.75:
+        signal = "Kvalitní, čekat na cenu"
+    else:
+        signal = "Sledovat"
 
     return {
         "Ticker": company.ticker,
-        "Company": company.company_name,
-        "Current Price": format_value(current_price, "currency_decimal", company.currency),
-        "Fair Buy Price": format_value(fair_price, "currency_decimal", company.currency),
+        "Firma": company.company_name,
+        "Aktuální cena": format_value(current_price, "currency_decimal", company.currency),
+        "Vnitřní hodnota": format_value(intrinsic_value, "currency_decimal", company.currency),
+        "Nákupní cena": format_value(buy_under_price, "currency_decimal", company.currency),
         "Buffett Score": score_text,
-        "Valuation": valuation,
-        "Gap to Fair Price": price_gap,
-        "Warnings": str(len(analysis.warnings)),
+        "Signál": signal,
+        "Valuace": valuation,
+        "Rozdíl k nákupní ceně": price_gap,
+        "Varování": str(len(analysis.warnings)),
     }
 
 
 def style_batch_results(frame: pd.DataFrame):
     def row_style(row):
-        if row.get("Valuation") == "Pod férovou cenou":
+        if row.get("Valuace") == "Pod nákupní cenou":
             return ["background-color: #eef9f0; color: #000000"] * len(row)
         return [""] * len(row)
 
@@ -176,13 +187,14 @@ def main() -> None:
 
     company = analysis.company
     current_price = getattr(company, "current_price", None)
+    intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
     buy_under_price = getattr(company, "buy_under_price", None)
     hero1, hero2, hero3, hero4, hero5, hero6 = st.columns(6)
     hero1.metric("Společnost", company.company_name)
     hero2.metric("Ticker", company.ticker)
     hero3.metric("Aktuální cena", format_value(current_price, "currency_decimal", company.currency))
-    hero4.metric("Férová cena k nákupu", format_value(buy_under_price, "currency_decimal", company.currency))
-    hero5.metric("Trailing P/E", format_value(company.trailing_pe))
+    hero4.metric("Vnitřní hodnota", format_value(intrinsic_value, "currency_decimal", company.currency))
+    hero5.metric("Nákupní cena", format_value(buy_under_price, "currency_decimal", company.currency))
     hero6.metric(
         "Buffett Score",
         "N/A" if analysis.score is None else f"{analysis.score}/{analysis.max_score}",
@@ -196,8 +208,9 @@ def main() -> None:
     info4.metric("Market Cap", format_value(company.market_cap, "currency", company.currency))
 
     st.markdown(
-        "<p class='compact-note'>Férová cena k nákupu je zde jednoduchý orientační výpočet: 15x trailing EPS. "
-        "Není to investiční doporučení a zobrazí se jen tehdy, když jsou dostupná potřebná data.</p>",
+        "<p class='compact-note'>Vnitřní hodnota je owner earnings DCF z Free Cash Flow. "
+        "Nákupní cena je vnitřní hodnota snížená o 25% margin of safety. "
+        "Nejde o investiční doporučení a při chybějících datech se zobrazí N/A.</p>",
         unsafe_allow_html=True,
     )
 
@@ -223,7 +236,7 @@ def main() -> None:
         with b2:
             metric_caption("Free Cash Flow", "Hotovost, která firmě zbude po provozu a investicích. Pro dlouhodobou kvalitu je důležitá.")
             metric_caption("Trailing P/E", "Poměr aktuální ceny akcie k historickému zisku na akcii.")
-            metric_caption("Férová cena k nákupu", "V této verzi je to orientačně 15x trailing EPS. Slouží jako jednoduchý Buffett-style filtr ceny.")
+            metric_caption("Nákupní cena", "Vnitřní hodnota snížená o 25% margin of safety. Zelená v hromadné tabulce znamená, že cena je pod touto hranicí.")
         st.write(analysis.summary)
 
     with tab2:
@@ -238,8 +251,9 @@ def main() -> None:
         st.markdown(
             "- Aplikace používá pouze data z Yahoo Finance přes `yfinance`.\n"
             "- Chybějící hodnoty nejsou domýšlené a zobrazují se jako `N/A`.\n"
-            "- Buffett Score je jednoduché orientační skóre nad dostupnými metrikami kvality.\n"
-            "- Férová cena k nákupu je konzervativní pomocný výpočet `15 x trailing EPS`."
+            "- Vnitřní hodnota je owner earnings DCF z Free Cash Flow, růstu, hotovosti, dluhu a počtu akcií.\n"
+            "- Nákupní cena je vnitřní hodnota snížená o 25% margin of safety.\n"
+            "- Buffett Score kombinuje kvalitu firmy, hotovostní sílu, rozumné zadlužení a cenovou disciplínu."
         )
 
 

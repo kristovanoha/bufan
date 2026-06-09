@@ -28,9 +28,16 @@ class CompanySnapshot:
     currency: str | None = None
     current_price: float | None = None
     market_cap: float | None = None
+    shares_outstanding: float | None = None
     trailing_pe: float | None = None
     trailing_eps: float | None = None
+    owner_earnings: float | None = None
+    intrinsic_value_per_share: float | None = None
     buy_under_price: float | None = None
+    dcf_growth_rate: float | None = None
+    dcf_discount_rate: float | None = None
+    dcf_terminal_growth_rate: float | None = None
+    margin_of_safety: float | None = None
     current_ratio: float | None = None
     return_on_equity: float | None = None
     debt_to_equity: float | None = None
@@ -40,6 +47,7 @@ class CompanySnapshot:
     earnings_growth: float | None = None
     free_cash_flow: float | None = None
     operating_cash_flow: float | None = None
+    capital_expenditures: float | None = None
     total_revenue: float | None = None
     net_income: float | None = None
     total_debt: float | None = None

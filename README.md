@@ -8,7 +8,8 @@ Buffett Analyzer je jednoduchá Streamlit aplikace pro osobní fundamentální a
 - Nevymýšlí žádné finanční hodnoty
 - Chybějící data zobrazuje jako `N/A`
 - Zobrazuje varování při neúplných datech
-- Ukazuje základní Buffett-style skóre na základě dostupných metrik
+- Ukazuje Buffett-style skóre na základě kvality firmy, cash flow, zadlužení a ceny
+- Počítá orientační vnitřní hodnotu pomocí owner earnings DCF
 
 ## Struktura projektu
 
@@ -43,5 +44,7 @@ streamlit run app.py
 ## Poznámky
 
 - Pokud Yahoo Finance některé pole neposkytne, aplikace zobrazí `N/A`.
+- Vnitřní hodnota je odhad, ne přesná hodnota. Model používá Free Cash Flow jako dostupnou aproximaci owner earnings.
+- Nákupní cena je vnitřní hodnota snížená o 25% margin of safety.
 - Výstup je určen pro osobní analýzu, nejde o investiční doporučení.
 - Hlavní specifikace projektu je v `docs/BUFFETT_ANALYZER_SPEC.md`.

@@ -86,6 +86,9 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
     if current_price is None:
         current_price = _normalize_number(_safe_get(info, "currentPrice", "regularMarketPrice", "previousClose"))
     market_cap = _normalize_number(_safe_get(info, "marketCap"))
+    shares_outstanding = _normalize_number(_safe_get(fast_info, "shares"))
+    if shares_outstanding is None:
+        shares_outstanding = _normalize_number(_safe_get(info, "sharesOutstanding", "impliedSharesOutstanding"))
     trailing_pe = _normalize_number(_safe_get(info, "trailingPE"))
     trailing_eps = _normalize_number(_safe_get(info, "trailingEps"))
     current_ratio = _normalize_number(_safe_get(info, "currentRatio"))
@@ -116,19 +119,27 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         "Operating Cash Flow",
         "Cash Flow From Continuing Operating Activities",
     )
+    capital_expenditures = _find_statement_value(
+        cashflow,
+        "Capital Expenditure",
+        "Capital Expenditures",
+        "Capital Expenditure Reported",
+    )
     free_cash_flow = _find_statement_value(cashflow, "Free Cash Flow")
+    if free_cash_flow is None and operating_cash_flow is not None and capital_expenditures is not None:
+        free_cash_flow = (
+            operating_cash_flow + capital_expenditures
+            if capital_expenditures < 0
+            else operating_cash_flow - capital_expenditures
+        )
 
     if trailing_eps is None and current_price is not None and trailing_pe not in (None, 0):
         trailing_eps = current_price / trailing_pe
 
-    buy_under_price = None
-    if trailing_eps is not None and trailing_eps > 0:
-        # Simple conservative rule of thumb: buy-under at 15x trailing EPS.
-        buy_under_price = trailing_eps * 15
-
     for value, label in (
         (current_price, "Current Price"),
         (market_cap, "Market Cap"),
+        (shares_outstanding, "Shares Outstanding"),
         (trailing_pe, "Trailing P/E"),
         (return_on_equity, "ROE"),
         (debt_to_equity, "Debt/Equity"),
@@ -147,9 +158,9 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         currency=_safe_get(info, "currency", "financialCurrency"),
         current_price=current_price,
         market_cap=market_cap,
+        shares_outstanding=shares_outstanding,
         trailing_pe=trailing_pe,
         trailing_eps=trailing_eps,
-        buy_under_price=buy_under_price,
         current_ratio=current_ratio,
         return_on_equity=return_on_equity,
         debt_to_equity=debt_to_equity,
@@ -159,6 +170,7 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         earnings_growth=earnings_growth,
         free_cash_flow=free_cash_flow,
         operating_cash_flow=operating_cash_flow,
+        capital_expenditures=capital_expenditures,
         total_revenue=total_revenue,
         net_income=net_income,
         total_debt=total_debt,
