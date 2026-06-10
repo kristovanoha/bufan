@@ -366,6 +366,12 @@ def render_batch_analysis() -> None:
         st.rerun()
 
 
+def render_placeholder_tab(title: str) -> None:
+    st.subheader(title)
+    st.info("Tato sekce je zatim pripravena pro dalsi vypocty a rozsireni.")
+    st.caption("Tato zalozka je zatim prazdna a pripravena pro samostatnou analyzu.")
+
+
 def main() -> None:
     st.title("Buffett Analyzer")
     st.caption("Osobni fundamentalni analyza USA akcii inspirovana principy Warrena Buffetta.")
@@ -373,54 +379,71 @@ def main() -> None:
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
+    buffett_tab, future_tab_one, future_tab_two = st.tabs(
+        ["Buffett analyza", "Dalsi analyza 1", "Dalsi analyza 2"]
+    )
 
-    with st.sidebar:
-        st.header("Vyber akcie")
-        selected_label = st.selectbox(
-            "Vyber firmu ze seznamu",
-            options=list(company_options.keys()) if company_options else [],
-            index=0 if company_options else None,
-            placeholder="Nejprve dopln companies.txt",
+    with buffett_tab:
+        st.subheader("Vyber akcie")
+        control1, control2, control3, control4 = st.columns([2.2, 1.3, 1, 1])
+        with control1:
+            selected_label = st.selectbox(
+                "Vyber firmu ze seznamu",
+                options=list(company_options.keys()) if company_options else [],
+                index=0 if company_options else None,
+                placeholder="Nejprve dopln companies.txt",
+            )
+        with control2:
+            manual_ticker = st.text_input("Nebo zadej ticker rucne", placeholder="Napr. AAPL").strip().upper()
+        with control3:
+            st.write("")
+            analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
+        with control4:
+            st.write("")
+            analyze_all_clicked = st.button("Analyzovat vse", use_container_width=True)
+
+        st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
+        selected_ticker = manual_ticker or company_options.get(selected_label, "")
+        main_tab, batch_tab, score_tab = st.tabs(
+            ["Analyza firmy", "Hromadna analyza", "Jak funguje Buffett Score"]
         )
-        manual_ticker = st.text_input("Nebo zadej ticker rucne", placeholder="Napr. AAPL").strip().upper()
-        analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
-        analyze_all_clicked = st.button("Analyzovat vse", use_container_width=True)
-        st.markdown("---")
-        st.info("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
 
-    selected_ticker = manual_ticker or company_options.get(selected_label, "")
-    main_tab, batch_tab, score_tab = st.tabs(["Analyza firmy", "Hromadna analyza", "Jak funguje Buffett Score"])
-
-    with main_tab:
-        if analyze_clicked:
-            if not selected_ticker:
-                st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
-            else:
-                with st.spinner(f"Nacitam data pro {selected_ticker}..."):
-                    snapshot = load_company_snapshot(selected_ticker)
-                    st.session_state.single_analysis = analyze_company(snapshot)
-                    st.session_state.single_ticker = selected_ticker
-
-        if st.session_state.single_analysis is None:
-            st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vlevo a klikni na `Analyzovat`.")
-        else:
-            render_single_analysis(st.session_state.single_analysis)
-
-    with batch_tab:
-        if analyze_all_clicked:
-            if not companies:
-                st.warning("Seznam firem je prazdny. Nejprve dopln `companies.txt`.")
-            else:
-                started = start_batch_analysis(companies)
-                if started:
-                    st.success("Hromadna analyza se spustila na pozadi.")
+        with main_tab:
+            if analyze_clicked:
+                if not selected_ticker:
+                    st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
                 else:
-                    st.info("Hromadna analyza uz bezi.")
+                    with st.spinner(f"Nacitam data pro {selected_ticker}..."):
+                        snapshot = load_company_snapshot(selected_ticker)
+                        st.session_state.single_analysis = analyze_company(snapshot)
+                        st.session_state.single_ticker = selected_ticker
 
-        render_batch_analysis()
+            if st.session_state.single_analysis is None:
+                st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vyse a klikni na `Analyzovat`.")
+            else:
+                render_single_analysis(st.session_state.single_analysis)
 
-    with score_tab:
-        render_score_explanation()
+        with batch_tab:
+            if analyze_all_clicked:
+                if not companies:
+                    st.warning("Seznam firem je prazdny. Nejprve dopln `companies.txt`.")
+                else:
+                    started = start_batch_analysis(companies)
+                    if started:
+                        st.success("Hromadna analyza se spustila na pozadi.")
+                    else:
+                        st.info("Hromadna analyza uz bezi.")
+
+            render_batch_analysis()
+
+        with score_tab:
+            render_score_explanation()
+
+    with future_tab_one:
+        render_placeholder_tab("Dalsi analyza 1")
+
+    with future_tab_two:
+        render_placeholder_tab("Dalsi analyza 2")
 
 
 if __name__ == "__main__":
