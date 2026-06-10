@@ -235,6 +235,37 @@ def render_score_explanation() -> None:
         "Proto muzes videt treba `6/8`, `5/7` nebo `4/6`."
     )
 
+    st.subheader("Jak pocitam vnitrni hodnotu")
+    st.write(
+        "Vnitrni hodnota se v aplikaci pocita metodou owner earnings DCF, kde jako zaklad pouzivam "
+        "aktualni `Free Cash Flow` z Yahoo Finance. Nejde o presnou predpoved budoucnosti, ale o "
+        "konzervativni odhad zalozeny na dnes dostupnych datech."
+    )
+    st.markdown(
+        "Postup vypoctu:\n"
+        "1. Jako owner earnings beru `Free Cash Flow`.\n"
+        "2. Rust odhaduji konzervativne jako nizsi z dvojice `earnings growth` a `revenue growth`.\n"
+        "3. Tento rust omezuji do pasma od `-5 %` do `+10 %`, aby model nebyl prestreleny.\n"
+        "4. Nasledujicich `10 let` projektuji budoucni cash flow a diskontuji je sazbou `10 %` rocne.\n"
+        "5. Po desatem roce pocitam terminalni hodnotu s dlouhodobym rustem `2 %`.\n"
+        "6. K soucasne hodnote cash flow pripocitam `cash` a odectu `total debt`.\n"
+        "7. Vyslednou hodnotu vlastniho kapitalu vydelim poctem akcii `shares outstanding`, a tim vznikne vnitrni hodnota na akcii."
+    )
+    st.caption(
+        "Pokud chybi Free Cash Flow, rust, cash, total debt nebo pocet akcii, aplikace vnitrni hodnotu "
+        "radsi nevypocita a zobrazi `N/A` i varovani."
+    )
+
+    st.subheader("Jak pocitam nakupni cenu")
+    st.write(
+        "Nakupni cena je odvozena primo z vnitrni hodnoty. Aplikace pouziva `25 % margin of safety`, "
+        "aby byla hranice pro pripadny nakup opatrnejsi."
+    )
+    st.markdown(
+        "`Nakupni cena = vnitrni hodnota na akcii x (1 - 0.25)`\n\n"
+        "Jinymi slovy: pokud vyjde vnitrni hodnota 100 USD na akcii, bezpecnejsi nakupni cena v aplikaci bude 75 USD."
+    )
+
     st.subheader("Jak cist verdikt")
     verdicts = [
         ("Silny Buffett-style profil", "Firma splnila vetsinu dostupnych kvalitativnich i cenovych podminek."),
@@ -387,19 +418,26 @@ def main() -> None:
         st.subheader("Vyber akcie")
         control1, control2, control3, control4 = st.columns([2.2, 1.3, 1, 1])
         with control1:
+            st.markdown("**Firma ze seznamu**")
             selected_label = st.selectbox(
                 "Vyber firmu ze seznamu",
                 options=list(company_options.keys()) if company_options else [],
                 index=0 if company_options else None,
                 placeholder="Nejprve dopln companies.txt",
+                label_visibility="collapsed",
             )
         with control2:
-            manual_ticker = st.text_input("Nebo zadej ticker rucne", placeholder="Napr. AAPL").strip().upper()
+            st.markdown("**Rucni ticker**")
+            manual_ticker = st.text_input(
+                "Nebo zadej ticker rucne",
+                placeholder="Napr. AAPL",
+                label_visibility="collapsed",
+            ).strip().upper()
         with control3:
-            st.write("")
+            st.markdown("**Akce**")
             analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
         with control4:
-            st.write("")
+            st.markdown("**Akce**")
             analyze_all_clicked = st.button("Analyzovat vse", use_container_width=True)
 
         st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
