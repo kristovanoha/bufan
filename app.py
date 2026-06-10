@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from threading import Lock, Thread
 from pathlib import Path
@@ -10,6 +11,7 @@ import streamlit as st
 from analyzer import analyze_company
 from company_loader import load_companies
 from data_provider import load_company_snapshot
+from fred_provider import fetch_macro_dashboard
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -74,6 +76,7 @@ def metric_caption(title: str, body: str) -> None:
 def ensure_session_state() -> None:
     st.session_state.setdefault("single_analysis", None)
     st.session_state.setdefault("single_ticker", "")
+    st.session_state.setdefault("macro_last_completed_at", "")
 
 
 @st.cache_resource
@@ -87,6 +90,22 @@ def get_batch_state() -> dict:
         "status": "",
         "updated_at": "",
         "error": None,
+    }
+
+
+@st.cache_resource
+def get_macro_state() -> dict:
+    return {
+        "lock": Lock(),
+        "running": False,
+        "results": [],
+        "errors": [],
+        "status": "",
+        "updated_at": "",
+        "api_key": "",
+        "done": 0,
+        "total": 0,
+        "started_at": "",
     }
 
 
@@ -379,7 +398,7 @@ def render_batch_analysis() -> None:
     if updated_at:
         st.caption(f"Posledni dokoncena hromadna analyza: {updated_at}")
     if not results:
-        st.info("Zatim tu neni hromadna analyza. Klikni vlevo na `Analyzovat vse`.")
+        st.info("Zatim tu neni hromadna analyza. V horni casti teto zalozky klikni na `Analyzovat vse`.")
         if state["running"]:
             time.sleep(2)
             st.rerun()
@@ -397,6 +416,223 @@ def render_batch_analysis() -> None:
         st.rerun()
 
 
+def format_macro_value(value: float | None, units: str) -> str:
+    if value is None:
+        return "N/A"
+
+    units_lower = units.lower()
+    if "percent" in units_lower:
+        return f"{value:.2f} %"
+    if "million" in units_lower:
+        return f"{value:,.0f} mil. USD"
+    if "billion" in units_lower:
+        return f"{value:,.2f} mld."
+    if "index" in units_lower:
+        return f"{value:,.2f}"
+    return f"{value:,.2f}"
+
+
+def render_macro_series_card(series_result) -> None:
+    latest_date = (
+        series_result.latest_date.strftime("%d.%m.%Y")
+        if series_result.latest_date is not None
+        else "N/A"
+    )
+    chart_frame = series_result.observations.rename(columns={"value": series_result.definition.title})
+
+    st.markdown(f"### {series_result.definition.title}")
+    metric1, metric2 = st.columns(2)
+    metric1.metric("Posledni hodnota", format_macro_value(series_result.latest_value, series_result.units))
+    metric2.metric("Datum posledni hodnoty", latest_date)
+    st.line_chart(chart_frame, use_container_width=True, height=260)
+    st.caption(series_result.definition.description)
+    st.caption(
+        f"Serie: {series_result.definition.series_id} | Jednotky: {series_result.units} | Frekvence: {series_result.frequency}"
+    )
+    if series_result.notes:
+        with st.expander("Poznamka k serii", expanded=False):
+            st.write(series_result.notes)
+
+
+def start_macro_analysis(api_key: str) -> bool:
+    state = get_macro_state()
+    with state["lock"]:
+        if state["running"] and state["api_key"] == api_key:
+            return False
+        state["running"] = True
+        state["results"] = []
+        state["errors"] = []
+        state["status"] = "Nacitam makro data z FRED..."
+        state["updated_at"] = ""
+        state["api_key"] = api_key
+        state["done"] = 0
+        state["total"] = 15
+        state["started_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    def worker() -> None:
+        def on_progress(results, errors, done, total) -> None:
+            with state["lock"]:
+                state["results"] = results
+                state["errors"] = errors
+                state["done"] = done
+                state["total"] = total
+                state["status"] = f"Nacteno {done}/{total} makro serii..."
+
+        results, errors = fetch_macro_dashboard(api_key, progress_callback=on_progress)
+        with state["lock"]:
+            state["results"] = results
+            state["errors"] = errors
+            state["running"] = False
+            state["status"] = "Makro data nactena."
+            state["updated_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")
+            state["done"] = len(results) + len(errors)
+
+    Thread(target=worker, daemon=True).start()
+    return True
+
+
+def ensure_macro_preload_started() -> None:
+    api_key = st.secrets.get("FRED_API_KEY", "") or os.getenv("FRED_API_KEY", "")
+    if not api_key:
+        return
+
+    state = read_macro_state()
+    if state["running"]:
+        return
+    if state["api_key"] == api_key and (state["results"] or state["errors"]):
+        return
+
+    start_macro_analysis(api_key)
+
+
+def read_macro_state() -> dict:
+    state = get_macro_state()
+    with state["lock"]:
+        return {
+            "running": state["running"],
+            "results": list(state["results"]),
+            "errors": list(state["errors"]),
+            "status": state["status"],
+            "updated_at": state["updated_at"],
+            "api_key": state["api_key"],
+            "done": state["done"],
+            "total": state["total"],
+            "started_at": state["started_at"],
+        }
+
+
+def render_macro_sections(results) -> None:
+    categories = [
+        "Menova politika a inflace",
+        "Realna ekonomika",
+        "Penezni zasoba a dluh",
+    ]
+
+    for category in categories:
+        st.markdown("---")
+        st.subheader(category)
+        series_for_category = [item for item in results if item.definition.category == category]
+        for index in range(0, len(series_for_category), 2):
+            columns = st.columns(2)
+            for column, series_result in zip(columns, series_for_category[index : index + 2]):
+                with column:
+                    render_macro_series_card(series_result)
+
+
+def render_macro_header() -> None:
+    st.subheader("Makroekonomika USA")
+    st.write(
+        "Tato sekce taha makroekonomicka data z FRED API a zobrazuje je jako samostatne grafy s kratkym vysvetlenim. "
+        "Cilem je mit na jednom miste inflaci, sazby, nezamestnanost, HDP, penezni zasobu, dluh i recesni signaly."
+    )
+    st.caption(
+        "Zdroj dat: FRED (Federal Reserve Economic Data). Nacitani probiha na pozadi a samotne FRED serie se stahuji paralelne."
+    )
+
+
+def render_macro_toolbar(state: dict, api_key: str, auto_rerun_on_start: bool = False) -> dict:
+    header1, header2 = st.columns([1, 3])
+    with header1:
+        if st.button("Obnovit makro data", use_container_width=True):
+            start_macro_analysis(api_key)
+            state = read_macro_state()
+            if auto_rerun_on_start:
+                st.rerun()
+    with header2:
+        if state["updated_at"]:
+            st.caption(f"Posledni uspesne nacteni: {state['updated_at']}")
+        elif state["started_at"]:
+            st.caption(f"Spusteno: {state['started_at']}")
+    return state
+
+
+@st.fragment(run_every=1)
+def render_macro_loading_view(api_key: str) -> None:
+    state = read_macro_state()
+    state = render_macro_toolbar(state, api_key)
+
+    if state["running"]:
+        total = max(state["total"], 1)
+        st.progress(state["done"] / total, text=state["status"])
+        st.info("Makro data se nacitaji na pozadi. Hotove grafy se postupne doplnuji.")
+        if state["errors"]:
+            for error in state["errors"]:
+                st.warning(error)
+        if state["results"]:
+            render_macro_sections(state["results"])
+        return
+
+    if state["updated_at"] and st.session_state.macro_last_completed_at != state["updated_at"]:
+        st.session_state.macro_last_completed_at = state["updated_at"]
+        st.rerun()
+
+    if state["errors"] and not state["results"]:
+        for error in state["errors"]:
+            st.warning(error)
+        return
+
+    if state["results"]:
+        render_macro_sections(state["results"])
+
+
+def render_macro_analysis() -> None:
+    render_macro_header()
+    api_key = st.secrets.get("FRED_API_KEY", "") or os.getenv("FRED_API_KEY", "")
+    if not api_key:
+        st.info(
+            "Pro nacitani makro dat chybi ulozeny FRED API key ve Streamlit secrets nebo v `FRED_API_KEY`."
+        )
+        return
+
+    state = read_macro_state()
+    key_changed = state["api_key"] != api_key
+    if key_changed or (not state["running"] and not state["results"] and not state["errors"]):
+        start_macro_analysis(api_key)
+        st.session_state.macro_last_completed_at = ""
+        state = read_macro_state()
+
+    if state["running"]:
+        render_macro_loading_view(api_key)
+        return
+
+    state = render_macro_toolbar(state, api_key, auto_rerun_on_start=True)
+
+    if state["errors"] and not state["results"]:
+        for error in state["errors"]:
+            st.warning(error)
+        return
+
+    if state["errors"]:
+        for error in state["errors"]:
+            st.warning(error)
+
+    if not state["results"]:
+        st.warning("Nepodarilo se nacist zadna makro data z FRED.")
+        return
+
+    render_macro_sections(state["results"])
+
+
 def render_placeholder_tab(title: str) -> None:
     st.subheader(title)
     st.info("Tato sekce je zatim pripravena pro dalsi vypocty a rozsireni.")
@@ -407,11 +643,12 @@ def main() -> None:
     st.title("Buffett Analyzer")
     st.caption("Osobni fundamentalni analyza USA akcii inspirovana principy Warrena Buffetta.")
     ensure_session_state()
+    ensure_macro_preload_started()
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
-    buffett_tab, future_tab_one, future_tab_two = st.tabs(
-        ["Buffett analyza", "Dalsi analyza 1", "Dalsi analyza 2"]
+    buffett_tab, macro_tab, future_tab_one, future_tab_two = st.tabs(
+        ["Buffett analyza", "Makroekonomika (FRED)", "Dalsi analyza 1", "Dalsi analyza 2"]
     )
 
     with buffett_tab:
@@ -482,6 +719,9 @@ def main() -> None:
 
     with future_tab_two:
         render_placeholder_tab("Dalsi analyza 2")
+
+    with macro_tab:
+        render_macro_analysis()
 
 
 if __name__ == "__main__":
