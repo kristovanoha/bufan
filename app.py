@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from threading import Lock, Thread
@@ -71,6 +72,21 @@ def metrics_dataframe(metrics, currency: str | None) -> pd.DataFrame:
 
 def metric_caption(title: str, body: str) -> None:
     st.markdown(f"**{title}**  \n{body}")
+
+
+def load_fred_api_key() -> str:
+    config_path = Path(__file__).with_name("config.json")
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+            api_key = str(config.get("fred_api_key", "")).strip()
+            if api_key:
+                return api_key
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return str(st.secrets.get("FRED_API_KEY", "") or os.getenv("FRED_API_KEY", "")).strip()
 
 
 def ensure_session_state() -> None:
@@ -492,7 +508,7 @@ def start_macro_analysis(api_key: str) -> bool:
 
 
 def ensure_macro_preload_started() -> None:
-    api_key = st.secrets.get("FRED_API_KEY", "") or os.getenv("FRED_API_KEY", "")
+    api_key = load_fred_api_key()
     if not api_key:
         return
 
@@ -597,10 +613,10 @@ def render_macro_loading_view(api_key: str) -> None:
 
 def render_macro_analysis() -> None:
     render_macro_header()
-    api_key = st.secrets.get("FRED_API_KEY", "") or os.getenv("FRED_API_KEY", "")
+    api_key = load_fred_api_key()
     if not api_key:
         st.info(
-            "Pro nacitani makro dat chybi ulozeny FRED API key ve Streamlit secrets nebo v `FRED_API_KEY`."
+            "Pro nacitani makro dat chybi `fred_api_key` v `config.json`, Streamlit secrets nebo `FRED_API_KEY`."
         )
         return
 
