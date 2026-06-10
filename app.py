@@ -414,7 +414,7 @@ def render_batch_analysis() -> None:
     if updated_at:
         st.caption(f"Posledni dokoncena hromadna analyza: {updated_at}")
     if not results:
-        st.info("Zatim tu neni hromadna analyza. V horni casti teto zalozky klikni na `Analyzovat vse`.")
+        st.info("Zatim tu neni hromadna analyza. V horni casti teto zalozky klikni na `Hromadna analyza`.")
         if state["running"]:
             time.sleep(2)
             st.rerun()
@@ -461,13 +461,10 @@ def render_macro_series_card(series_result) -> None:
     metric1.metric("Posledni hodnota", format_macro_value(series_result.latest_value, series_result.units))
     metric2.metric("Datum posledni hodnoty", latest_date)
     st.line_chart(chart_frame, use_container_width=True, height=260)
-    st.caption(series_result.definition.description)
+    st.write(series_result.definition.description)
     st.caption(
         f"Serie: {series_result.definition.series_id} | Jednotky: {series_result.units} | Frekvence: {series_result.frequency}"
     )
-    if series_result.notes:
-        with st.expander("Poznamka k serii", expanded=False):
-            st.write(series_result.notes)
 
 
 def start_macro_analysis(api_key: str) -> bool:
@@ -562,7 +559,7 @@ def render_macro_header() -> None:
         "Cilem je mit na jednom miste inflaci, sazby, nezamestnanost, HDP, penezni zasobu, dluh i recesni signaly."
     )
     st.caption(
-        "Zdroj dat: FRED (Federal Reserve Economic Data). Nacitani probiha na pozadi a samotne FRED serie se stahuji paralelne."
+        "Zdroj dat: FRED (Federal Reserve Economic Data). Data se nacitaji na pozadi."
     )
 
 
@@ -691,12 +688,12 @@ def main() -> None:
             analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
         with control4:
             st.markdown("**Akce**")
-            analyze_all_clicked = st.button("Analyzovat vse", use_container_width=True)
+            analyze_all_clicked = st.button("Hromadna analyza", use_container_width=True)
 
         st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
         selected_ticker = manual_ticker or company_options.get(selected_label, "")
         main_tab, batch_tab, score_tab = st.tabs(
-            ["Analyza firmy", "Hromadna analyza", "Jak funguje Buffett Score"]
+            ["Analyza", "Hromadna analyza", "Jak funguje Buffett Score"]
         )
 
         with main_tab:
