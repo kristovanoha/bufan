@@ -13,10 +13,13 @@ from analyzer import analyze_company
 from company_loader import load_companies
 from crypto_provider import fetch_crypto_dashboard
 from data_provider import load_company_snapshot
-from fred_provider import fetch_macro_dashboard
+from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 
 
 CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_v1"
+FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
+    definition.series_id for definition in FRED_SERIES_DEFINITIONS
+)
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -107,6 +110,7 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("cz_single_analysis", None)
     st.session_state.setdefault("cz_single_ticker", "")
     st.session_state.setdefault("macro_last_completed_at", "")
+    st.session_state.setdefault("crisis_last_completed_at", "")
     st.session_state.setdefault("crypto_last_completed_at", "")
 
 
@@ -137,6 +141,7 @@ def get_macro_state() -> dict:
         "done": 0,
         "total": 0,
         "started_at": "",
+        "source_version": FRED_DATA_SOURCE_VERSION,
     }
 
 
@@ -552,6 +557,237 @@ def format_macro_value(value: float | None, units: str) -> str:
     return f"{value:,.2f}"
 
 
+CRISIS_SERIES_ORDER = [
+    "FEDFUNDS",
+    "CPIAUCSL",
+    "UNRATE",
+    "T10Y2Y",
+    "T10Y3M",
+    "VIXCLS",
+    "BAA10Y",
+    "M2SL",
+    "GDP",
+    "SAHMREALTIME",
+]
+
+
+CRISIS_SERIES_EXPLANATIONS = {
+    "FEDFUNDS": {
+        "label": "Sazba Fedu",
+        "chart": "Graf ukazuje efektivni sazbu Fed Funds, tedy kratkodobou sazbu, kterou Fed primo ovlivnuje.",
+        "warning": "Kdyz sazba prudce roste nebo zustava vysoko, financovani firem i domacnosti zdrazuje a ekonomika se muze zacit brzdit. Prudke snizovani sazeb naopak casto prichazi az ve chvili, kdy Fed reaguje na zhorsujici se ekonomiku nebo financni stres.",
+    },
+    "CPIAUCSL": {
+        "label": "Inflace USA z CPI",
+        "chart": "FRED serie je cenovy index CPI. V teto zalozce ho prevadim na mezirocni zmenu v procentech, aby bylo videt skutecne inflacni tempo.",
+        "warning": "Vysoka inflace muze nutit Fed drzet sazby vysoko, coz zvysuje riziko zpomaleni. Rychly pad inflace muze byt pozitivni, ale pokud prichazi soucasne s rostouci nezamestnanosti a slabym HDP, muze ukazovat ochlazeni poptavky.",
+    },
+    "UNRATE": {
+        "label": "Nezamestnanost",
+        "chart": "Graf ukazuje miru nezamestnanosti U-3 v USA.",
+        "warning": "Samotna nizka nezamestnanost krizi nehlasi. Dulezity je hlavne rychly rust z nizkych hodnot. Kdyz nezamestnanost zacne zrychlovat, casto uz ekonomika slabne a firemni zisky se dostavaji pod tlak.",
+    },
+    "T10Y2Y": {
+        "label": "Vynosova krivka 10Y minus 2Y",
+        "chart": "Graf ukazuje rozdil mezi 10letym a 2letym vynosem americkych statnich dluhopisu.",
+        "warning": "Hodnota pod nulou znamena inverzni vynosovou krivku. Historicky to byl jeden z nejsledovanejsich predstihovych signalu recese, ale nacasovani muze byt nepresne a recese muze prijit az se zpozdenim.",
+    },
+    "T10Y3M": {
+        "label": "Vynosova krivka 10Y minus 3M",
+        "chart": "Graf ukazuje rozdil mezi 10letym a 3mesicnim vynosem americkych statnich dluhopisu.",
+        "warning": "Inverze pod nulou rika, ze kratke sazby jsou vysoko proti dlouhym vynosum. Trh tim casto signalizuje ocekavane zpomaleni, budouci pokles sazeb nebo recesni riziko.",
+    },
+    "VIXCLS": {
+        "label": "VIX index",
+        "chart": "Graf ukazuje ocekavanou volatilitu indexu S&P 500.",
+        "warning": "VIX je spis teplomer strachu nez dlouhodoby predstihovy indikator. Hodnoty nad 30 casto znamenaji stres na trzich, hodnoty nad 40 paniku. Vysoky VIX muze ukazovat uz probihajici trzni krizi.",
+    },
+    "BAA10Y": {
+        "label": "Kreditni spread BAA minus 10Y",
+        "chart": "Graf ukazuje rozdil mezi firemnimi dluhopisy ratingu BAA a 10letym statnim dluhopisem USA.",
+        "warning": "Kdyz spread roste, investori chteji vyssi odmenu za kreditni riziko. Prudke rozsireni spreadu casto znamena, ze se zhorsuje dostupnost kapitalu a trh se boji defaultu.",
+    },
+    "M2SL": {
+        "label": "Penezni zasoba M2",
+        "chart": "Graf ukazuje sirsi penezni zasobu M2. V popisu doplnuji i mezirocni zmenu, protoze ta lepe ukazuje zmenu likvidity.",
+        "warning": "Slaby rust nebo pokles M2 muze znamenat utahovani likvidity. Samo o sobe to neni recesni signal, ale v kombinaci s vysokymi sazbami, inverzi krivky a rostouci nezamestnanosti je to varovne.",
+    },
+    "GDP": {
+        "label": "HDP USA",
+        "chart": "Graf ukazuje nominalni HDP USA. Pro krizovy pohled je dulezite sledovat hlavne zpomaleni a poklesy ekonomicke aktivity.",
+        "warning": "Kdyz HDP klesa nebo prudce zpomaluje, krize uz muze probihat. HDP je obvykle zpozdeny ukazatel, proto je vhodne ho cist spolu s krivkou, nezamestnanosti a kreditnim spreadem.",
+    },
+    "SAHMREALTIME": {
+        "label": "Sahm Rule recession indicator",
+        "chart": "Graf ukazuje Sahm Rule indikator zalozeny na zhorseni nezamestnanosti.",
+        "warning": "Hodnota kolem 0.5 a vyse je silny signal, ze ekonomika uz pravdepodobne vstoupila do recese. Je to spis potvrzovaci signal nez dlouhy predstihovy indikator.",
+    },
+}
+
+
+def percent_change(series_result, periods: int) -> float | None:
+    values = series_result.observations["value"].dropna()
+    if len(values) <= periods:
+        return None
+    previous = values.iloc[-periods - 1]
+    latest = values.iloc[-1]
+    if previous == 0:
+        return None
+    return float((latest / previous - 1) * 100)
+
+
+def crisis_chart_frame(series_result) -> tuple[pd.DataFrame, str]:
+    series_id = series_result.definition.series_id
+    values = series_result.observations["value"].dropna()
+
+    if series_id == "CPIAUCSL":
+        frame = pd.DataFrame({"Mezirocni inflace z CPI (%)": values.pct_change(12) * 100}).dropna()
+        return frame, "CPI index prevedeny na mezirocni inflaci."
+
+    if series_id == "M2SL":
+        frame = pd.DataFrame({"M2 mezirocni zmena (%)": values.pct_change(12) * 100}).dropna()
+        return frame, "M2 prevedena na mezirocni zmenu likvidity."
+
+    if series_id == "GDP":
+        frame = pd.DataFrame({"HDP mezirocni zmena (%)": values.pct_change(4) * 100}).dropna()
+        return frame, "Nominalni HDP prevedeny na mezirocni zmenu."
+
+    return series_result.observations.rename(columns={"value": series_result.definition.title}), "Surova FRED serie."
+
+
+def latest_chart_value(frame: pd.DataFrame) -> float | None:
+    if frame.empty:
+        return None
+    values = frame.iloc[:, 0].dropna()
+    if values.empty:
+        return None
+    return float(values.iloc[-1])
+
+
+def crisis_signal(series_result, chart_value: float | None) -> str:
+    series_id = series_result.definition.series_id
+    latest = series_result.latest_value
+
+    if series_id in {"CPIAUCSL", "M2SL", "GDP"}:
+        latest = chart_value
+
+    if latest is None:
+        return "N/A"
+
+    if series_id == "FEDFUNDS":
+        six_period_change = None
+        values = series_result.observations["value"].dropna()
+        if len(values) > 6:
+            six_period_change = float(values.iloc[-1] - values.iloc[-7])
+        if latest >= 5:
+            return "Restriktivni sazby"
+        if six_period_change is not None and six_period_change <= -0.75:
+            return "Fed vyrazne uvolnuje"
+        return "Neutralni signal"
+
+    if series_id == "CPIAUCSL":
+        if latest >= 5:
+            return "Vysoka inflace"
+        if latest >= 3:
+            return "Zvysena inflace"
+        if latest < 0:
+            return "Deflacni tlak"
+        return "Mirnejsi inflace"
+
+    if series_id == "UNRATE":
+        three_month_change = None
+        values = series_result.observations["value"].dropna()
+        if len(values) > 3:
+            three_month_change = float(values.iloc[-1] - values.iloc[-4])
+        if three_month_change is not None and three_month_change >= 0.5:
+            return "Nezamestnanost rychle roste"
+        if latest >= 6:
+            return "Slaby pracovni trh"
+        return "Pracovni trh zatim drzi"
+
+    if series_id in {"T10Y2Y", "T10Y3M"}:
+        if latest < 0:
+            return "Inverze krivky"
+        if latest < 0.5:
+            return "Krivka je zplostela"
+        return "Krivka neni v inverzi"
+
+    if series_id == "VIXCLS":
+        if latest >= 40:
+            return "Trzni panika"
+        if latest >= 30:
+            return "Vysoky stres"
+        if latest >= 20:
+            return "Zvysena nervozita"
+        return "Klidnejsi trh"
+
+    if series_id == "BAA10Y":
+        if latest >= 3:
+            return "Vysoky kreditni stres"
+        if latest >= 2:
+            return "Zvysene kreditni riziko"
+        return "Kreditni trh klidnejsi"
+
+    if series_id == "M2SL":
+        if latest < 0:
+            return "M2 mezirocne klesa"
+        if latest < 2:
+            return "Slaby rust likvidity"
+        if latest > 8:
+            return "Silny rust likvidity"
+        return "Stredni rust likvidity"
+
+    if series_id == "GDP":
+        if latest < 0:
+            return "HDP mezirocne klesa"
+        if latest < 2:
+            return "Slabe tempo HDP"
+        return "HDP stale roste"
+
+    if series_id == "SAHMREALTIME":
+        if latest >= 0.5:
+            return "Recesni signal aktivni"
+        if latest >= 0.3:
+            return "Blizi se recesni hranici"
+        return "Signal zatim neaktivni"
+
+    return "N/A"
+
+
+def render_crisis_series_card(series_result) -> None:
+    series_id = series_result.definition.series_id
+    explanation = CRISIS_SERIES_EXPLANATIONS.get(series_id, {})
+    chart_frame, chart_note = crisis_chart_frame(series_result)
+    chart_value = latest_chart_value(chart_frame)
+    latest_date = (
+        series_result.latest_date.strftime("%d.%m.%Y")
+        if series_result.latest_date is not None
+        else "N/A"
+    )
+    primary_value = chart_value if series_id in {"CPIAUCSL", "M2SL", "GDP"} else series_result.latest_value
+    primary_units = "Percent" if series_id in {"CPIAUCSL", "M2SL", "GDP"} else series_result.units
+    one_year_change = percent_change(series_result, 12)
+
+    st.markdown(f"### {series_id} - {explanation.get('label', series_result.definition.title)}")
+    metric1, metric2, metric3 = st.columns([1, 1, 1.2])
+    metric1.metric("Posledni hodnota", format_macro_value(primary_value, primary_units))
+    metric2.metric("Datum", latest_date)
+    metric3.metric("Krizovy signal", crisis_signal(series_result, chart_value))
+
+    if not chart_frame.empty:
+        st.line_chart(chart_frame, use_container_width=True, height=260)
+    else:
+        st.info("Pro tuto serii zatim neni dost dat na krizovy graf.")
+
+    st.write(explanation.get("chart", series_result.definition.description))
+    st.write(explanation.get("warning", "Cti spolu s ostatnimi ukazateli, ne izolovane."))
+    if one_year_change is not None and series_id not in {"CPIAUCSL", "M2SL", "GDP"}:
+        st.caption(f"Mezirocni zmena surove serie: {one_year_change:.2f} %")
+    st.caption(
+        f"Serie: {series_id} | Jednotky FRED: {series_result.units} | Frekvence: {series_result.frequency} | {chart_note}"
+    )
+
+
 def render_macro_series_card(series_result) -> None:
     latest_date = (
         series_result.latest_date.strftime("%d.%m.%Y")
@@ -583,8 +819,9 @@ def start_macro_analysis(api_key: str) -> bool:
         state["updated_at"] = ""
         state["api_key"] = api_key
         state["done"] = 0
-        state["total"] = 15
+        state["total"] = len(FRED_SERIES_DEFINITIONS)
         state["started_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M:%S")
+        state["source_version"] = FRED_DATA_SOURCE_VERSION
 
     def worker() -> None:
         def on_progress(results, errors, done, total) -> None:
@@ -625,6 +862,18 @@ def ensure_macro_preload_started() -> None:
 def read_macro_state() -> dict:
     state = get_macro_state()
     with state["lock"]:
+        if state.get("source_version") != FRED_DATA_SOURCE_VERSION:
+            state["running"] = False
+            state["results"] = []
+            state["errors"] = []
+            state["status"] = ""
+            state["updated_at"] = ""
+            state["api_key"] = ""
+            state["done"] = 0
+            state["total"] = 0
+            state["started_at"] = ""
+            state["source_version"] = FRED_DATA_SOURCE_VERSION
+
         return {
             "running": state["running"],
             "results": list(state["results"]),
@@ -635,12 +884,14 @@ def read_macro_state() -> dict:
             "done": state["done"],
             "total": state["total"],
             "started_at": state["started_at"],
+            "source_version": state["source_version"],
         }
 
 
 def render_macro_sections(results) -> None:
     categories = [
         "Menova politika a inflace",
+        "Trzni stres a krize",
         "Realna ekonomika",
         "Penezni zasoba a dluh",
     ]
@@ -667,10 +918,15 @@ def render_macro_header() -> None:
     )
 
 
-def render_macro_toolbar(state: dict, api_key: str, auto_rerun_on_start: bool = False) -> dict:
+def render_macro_toolbar(
+    state: dict,
+    api_key: str,
+    auto_rerun_on_start: bool = False,
+    button_label: str = "Obnovit makro data",
+) -> dict:
     header1, header2 = st.columns([1, 3])
     with header1:
-        if st.button("Obnovit makro data", use_container_width=True):
+        if st.button(button_label, use_container_width=True):
             start_macro_analysis(api_key)
             state = read_macro_state()
             if auto_rerun_on_start:
@@ -748,6 +1004,108 @@ def render_macro_analysis() -> None:
         return
 
     render_macro_sections(state["results"])
+
+
+def render_crisis_header() -> None:
+    st.subheader("Krize - varovne makro a trzni indikatory")
+    st.write(
+        "Tato zalozka sleduje vybrane FRED serie, ktere pomahaji odhadnout, jestli se v USA zvysuje riziko krize, "
+        "nebo jestli uz ekonomika a trhy vykazuji znamky stresu. Jeden ukazatel sam o sobe nestaci; dulezita je kombinace sazeb, inflace, nezamestnanosti, vynosove krivky, volatility, kreditu, likvidity a HDP."
+    )
+    st.caption("Zdroj dat: FRED. Nejde o investicni doporuceni ani predpoved jistoty recese.")
+
+
+def render_crisis_sections(results, running: bool = False) -> None:
+    result_map = {item.definition.series_id: item for item in results}
+    available_count = sum(1 for series_id in CRISIS_SERIES_ORDER if series_id in result_map)
+    st.caption(f"Dostupne krizove ukazatele: {available_count}/{len(CRISIS_SERIES_ORDER)}")
+
+    for series_id in CRISIS_SERIES_ORDER:
+        st.markdown("---")
+        series_result = result_map.get(series_id)
+        if series_result is None:
+            explanation = CRISIS_SERIES_EXPLANATIONS.get(series_id, {})
+            st.subheader(f"{series_id} - {explanation.get('label', 'N/A')}")
+            if running:
+                st.info("Tato FRED serie se jeste nacita. Graf se doplni automaticky, jakmile prijde odpoved z FRED.")
+            else:
+                st.warning("Tato FRED serie se nepodarila nacist. Zkus obnovit krizova data.")
+            if explanation:
+                st.write(explanation["warning"])
+            continue
+        render_crisis_series_card(series_result)
+
+
+@st.fragment(run_every=1)
+def render_crisis_loading_view(api_key: str) -> None:
+    state = read_macro_state()
+    state = render_macro_toolbar(state, api_key, button_label="Obnovit krizova data")
+
+    if state["running"]:
+        total = max(state["total"], 1)
+        st.progress(state["done"] / total, text=state["status"])
+        st.info("Krizove indikatory se nacitaji z FRED na pozadi. Hotove grafy se budou postupne doplnovat.")
+        if state["errors"]:
+            for error in state["errors"]:
+                st.warning(error)
+        if state["results"]:
+            render_crisis_sections(state["results"], running=True)
+        return
+
+    if state["updated_at"] and st.session_state.crisis_last_completed_at != state["updated_at"]:
+        st.session_state.crisis_last_completed_at = state["updated_at"]
+        st.rerun()
+
+    if state["errors"] and not state["results"]:
+        for error in state["errors"]:
+            st.warning(error)
+        return
+
+    if state["results"]:
+        render_crisis_sections(state["results"], running=state["running"])
+
+
+def render_crisis_analysis() -> None:
+    render_crisis_header()
+    api_key = load_fred_api_key()
+    if not api_key:
+        st.info(
+            "Pro nacitani krizovych dat chybi `fred_api_key` v `config.json`, Streamlit secrets nebo `FRED_API_KEY`."
+        )
+        return
+
+    state = read_macro_state()
+    key_changed = state["api_key"] != api_key
+    if key_changed or (not state["running"] and not state["results"] and not state["errors"]):
+        start_macro_analysis(api_key)
+        st.session_state.crisis_last_completed_at = ""
+        state = read_macro_state()
+
+    if state["running"]:
+        render_crisis_loading_view(api_key)
+        return
+
+    state = render_macro_toolbar(
+        state,
+        api_key,
+        auto_rerun_on_start=True,
+        button_label="Obnovit krizova data",
+    )
+
+    if state["errors"] and not state["results"]:
+        for error in state["errors"]:
+            st.warning(error)
+        return
+
+    if state["errors"]:
+        for error in state["errors"]:
+            st.warning(error)
+
+    if not state["results"]:
+        st.warning("Nepodarilo se nacist zadna krizova data z FRED.")
+        return
+
+    render_crisis_sections(state["results"], running=False)
 
 
 def start_crypto_analysis(days: int | str = 365) -> bool:
@@ -1228,8 +1586,8 @@ def main() -> None:
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     cz_companies = load_companies(Path(__file__).with_name("companies_cz.txt"))
-    buffett_tab, buffet_cz_tab, macro_tab, crypto_tab = st.tabs(
-        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin"]
+    buffett_tab, buffet_cz_tab, macro_tab, crypto_tab, crisis_tab = st.tabs(
+        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin", "Krize"]
     )
 
     with buffett_tab:
@@ -1243,6 +1601,9 @@ def main() -> None:
 
     with crypto_tab:
         render_crypto_analysis()
+
+    with crisis_tab:
+        render_crisis_analysis()
 
 
 if __name__ == "__main__":

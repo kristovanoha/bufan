@@ -70,6 +70,27 @@ FRED_SERIES_DEFINITIONS = [
         observation_start="2000-01-01",
     ),
     FredSeriesDefinition(
+        series_id="T10Y3M",
+        title="10Y-3M Yield Spread",
+        description="Rozdil mezi 10letym a 3mesicnim vynosem americkych dluhopisu. Inverze pod nulou patri mezi nejsledovanejsi predstihove signaly recese, protoze kratke sazby jsou vysoko vuci dlouhym vynosum.",
+        category="Trzni stres a krize",
+        observation_start="2000-01-01",
+    ),
+    FredSeriesDefinition(
+        series_id="VIXCLS",
+        title="VIX Index",
+        description="Index ocekavane volatility americkych akcii. Vyssi VIX znamena vetsi strach a nejistotu na trhu. Hodnoty nad 30 casto ukazuji stres, hodnoty nad 40 paniku nebo prudkou krizi duvery.",
+        category="Trzni stres a krize",
+        observation_start="2000-01-01",
+    ),
+    FredSeriesDefinition(
+        series_id="BAA10Y",
+        title="BAA-10Y Credit Spread",
+        description="Rozdil mezi vynosem firemnich dluhopisu BAA a 10letym statnim dluhopisem USA. Kdyz spread roste, trh pozaduje vyssi premii za kreditni riziko, coz casto doprovazi financni stres.",
+        category="Trzni stres a krize",
+        observation_start="2000-01-01",
+    ),
+    FredSeriesDefinition(
         series_id="GDP",
         title="US GDP",
         description="Nominalni HDP USA v aktualnich cenach. Ukazuje velikost ekonomiky vcetne vlivu inflace. Je uzitecny pro kontext dluhu, trzeb firem a celkoveho ekonomickeho prostredi.",
