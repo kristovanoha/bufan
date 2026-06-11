@@ -1,0 +1,11 @@
+# Ceske akcie dostupne na Yahoo Finance pres prazskou burzu (.PR)
+CEZ.PR | CEZ, a.s.
+KOMB.PR | Komercni banka, a.s.
+MONET.PR | MONETA Money Bank, a.s.
+TABAK.PR | Philip Morris CR a.s.
+ERBAG.PR | Erste Group Bank AG
+VIG.PR | Vienna Insurance Group AG
+KOFOL.PR | Kofola CeskoSlovensko a.s.
+COLT.PR | Colt CZ Group SE
+GEV.PR | GEVORKYAN, s.r.o.
+PINK.PR | Pilulka Lekarny a.s.

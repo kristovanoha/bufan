@@ -12,6 +12,7 @@ import yfinance as yf
 
 
 COINGECKO_API_BASE = "https://api.coingecko.com/api/v3"
+BLOCKCHAIN_CHARTS_API_BASE = "https://api.blockchain.info/charts"
 MEMPOOL_API_BASE = "https://mempool.space/api"
 ALTERNATIVE_API_BASE = "https://api.alternative.me"
 
@@ -53,10 +54,37 @@ class FearGreedData:
 
 
 @dataclass(slots=True)
+class WhaleTransaction:
+    txid: str
+    block_height: int | None
+    timestamp: str | None
+    total_output_btc: float
+    fee_btc: float | None
+    output_count: int
+    link: str
+
+
+@dataclass(slots=True)
+class BitcoinWhaleData:
+    transactions: list[WhaleTransaction] = field(default_factory=list)
+    scanned_blocks: int = 0
+    scanned_transactions: int = 0
+    minimum_btc: float = 50.0
+
+
+@dataclass(slots=True)
+class BitcoinOnChainVolumeData:
+    estimated_volume: pd.DataFrame = field(default_factory=pd.DataFrame)
+    output_volume: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+@dataclass(slots=True)
 class CryptoDashboard:
     market: BitcoinMarketData | None = None
     network: BitcoinNetworkData | None = None
     sentiment: FearGreedData | None = None
+    whales: BitcoinWhaleData | None = None
+    onchain_volume: BitcoinOnChainVolumeData | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -195,12 +223,129 @@ def fetch_fear_greed_data(limit: int = 30) -> FearGreedData:
     )
 
 
+def _is_coinbase_transaction(tx: dict) -> bool:
+    vin = tx.get("vin", [])
+    return bool(vin and vin[0].get("is_coinbase"))
+
+
+def _transaction_total_output_btc(tx: dict) -> float:
+    total_sats = 0
+    for output in tx.get("vout", []):
+        value = _normalize_number(output.get("value"))
+        if value is not None:
+            total_sats += value
+    return total_sats / 100_000_000
+
+
+def fetch_bitcoin_whale_data(
+    minimum_btc: float = 50.0,
+    block_limit: int = 3,
+    pages_per_block: int = 12,
+) -> BitcoinWhaleData:
+    blocks_payload = _request_json(f"{MEMPOOL_API_BASE}/blocks")
+    blocks = blocks_payload[:block_limit] if isinstance(blocks_payload, list) else []
+    transactions: list[WhaleTransaction] = []
+    scanned_transactions = 0
+
+    for block in blocks:
+        block_hash = block.get("id")
+        block_height = _normalize_int(block.get("height"))
+        block_timestamp = _normalize_int(block.get("timestamp"))
+        timestamp_text = None
+        if block_timestamp is not None:
+            timestamp_text = pd.to_datetime(block_timestamp, unit="s").strftime("%d.%m.%Y %H:%M")
+        if not block_hash:
+            continue
+
+        for page in range(pages_per_block):
+            start_index = page * 25
+            tx_payload = _request_json(f"{MEMPOOL_API_BASE}/block/{block_hash}/txs/{start_index}")
+            txs = tx_payload if isinstance(tx_payload, list) else []
+            if not txs:
+                break
+            scanned_transactions += len(txs)
+
+            for tx in txs:
+                if _is_coinbase_transaction(tx):
+                    continue
+                total_output_btc = _transaction_total_output_btc(tx)
+                if total_output_btc < minimum_btc:
+                    continue
+                fee = _normalize_number(tx.get("fee"))
+                transactions.append(
+                    WhaleTransaction(
+                        txid=tx.get("txid", ""),
+                        block_height=block_height,
+                        timestamp=timestamp_text,
+                        total_output_btc=total_output_btc,
+                        fee_btc=None if fee is None else fee / 100_000_000,
+                        output_count=len(tx.get("vout", [])),
+                        link=f"https://mempool.space/tx/{tx.get('txid', '')}",
+                    )
+                )
+
+    transactions.sort(key=lambda item: item.total_output_btc, reverse=True)
+    return BitcoinWhaleData(
+        transactions=transactions[:25],
+        scanned_blocks=len(blocks),
+        scanned_transactions=scanned_transactions,
+        minimum_btc=minimum_btc,
+    )
+
+
+def _fetch_blockchain_chart(chart_name: str, column_name: str) -> pd.DataFrame:
+    params = urlencode(
+        {
+            "timespan": "1year",
+            "format": "json",
+            "sampled": "false",
+        }
+    )
+    payload = _request_json(f"{BLOCKCHAIN_CHARTS_API_BASE}/{chart_name}?{params}")
+    values = payload.get("values", []) if isinstance(payload, dict) else []
+
+    rows = []
+    for item in values:
+        timestamp = _normalize_int(item.get("x"))
+        value = _normalize_number(item.get("y"))
+        if timestamp is None or value is None:
+            continue
+        rows.append(
+            {
+                "date": pd.to_datetime(timestamp, unit="s"),
+                column_name: value,
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    return frame.sort_values("date").set_index("date")
+
+
+def fetch_bitcoin_onchain_volume_data() -> BitcoinOnChainVolumeData:
+    estimated_volume = _fetch_blockchain_chart("estimated-transaction-volume", "Odhadovany prevod BTC")
+    output_volume = _fetch_blockchain_chart("output-volume", "Vystupni objem BTC")
+
+    if not estimated_volume.empty:
+        estimated_volume["30denni prumer"] = estimated_volume["Odhadovany prevod BTC"].rolling(30, min_periods=1).mean()
+    if not output_volume.empty:
+        output_volume["30denni prumer"] = output_volume["Vystupni objem BTC"].rolling(30, min_periods=1).mean()
+
+    return BitcoinOnChainVolumeData(
+        estimated_volume=estimated_volume,
+        output_volume=output_volume,
+    )
+
+
 def fetch_crypto_dashboard(days: int | str = 365) -> CryptoDashboard:
     dashboard = CryptoDashboard()
     tasks = {
         "market": lambda: fetch_bitcoin_market_data(days),
         "network": fetch_bitcoin_network_data,
         "sentiment": fetch_fear_greed_data,
+        "whales": fetch_bitcoin_whale_data,
+        "onchain_volume": fetch_bitcoin_onchain_volume_data,
     }
 
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:

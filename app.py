@@ -102,14 +102,16 @@ def load_fred_api_key() -> str:
 
 
 def ensure_session_state() -> None:
-    st.session_state.setdefault("single_analysis", None)
-    st.session_state.setdefault("single_ticker", "")
+    st.session_state.setdefault("us_single_analysis", st.session_state.get("single_analysis"))
+    st.session_state.setdefault("us_single_ticker", st.session_state.get("single_ticker", ""))
+    st.session_state.setdefault("cz_single_analysis", None)
+    st.session_state.setdefault("cz_single_ticker", "")
     st.session_state.setdefault("macro_last_completed_at", "")
     st.session_state.setdefault("crypto_last_completed_at", "")
 
 
 @st.cache_resource
-def get_batch_state() -> dict:
+def get_batch_state(scope: str = "us") -> dict:
     return {
         "lock": Lock(),
         "running": False,
@@ -251,8 +253,8 @@ def build_failed_batch_row(company, error: Exception) -> dict[str, str]:
     }
 
 
-def start_batch_analysis(companies) -> bool:
-    state = get_batch_state()
+def start_batch_analysis(companies, scope: str = "us") -> bool:
+    state = get_batch_state(scope)
     with state["lock"]:
         if state["running"]:
             return False
@@ -449,8 +451,8 @@ def render_single_analysis(analysis) -> None:
         )
 
 
-def read_batch_state() -> dict:
-    state = get_batch_state()
+def read_batch_state(scope: str = "us") -> dict:
+    state = get_batch_state(scope)
     with state["lock"]:
         return {
             "running": state["running"],
@@ -463,8 +465,8 @@ def read_batch_state() -> dict:
         }
 
 
-def render_batch_analysis() -> None:
-    state = read_batch_state()
+def render_batch_analysis(scope: str = "us") -> None:
+    state = read_batch_state(scope)
     results = state["results"]
     updated_at = state["updated_at"]
 
@@ -491,18 +493,21 @@ def render_batch_analysis() -> None:
             "Filtr podle sektoru",
             options=filter_options(results_frame, "Sektor"),
             placeholder="Vsechny sektory",
+            key=f"{scope}_sector_filter",
         )
     with filter2:
         selected_industries = st.multiselect(
             "Filtr podle odvetvi",
             options=filter_options(results_frame, "Odvetvi"),
             placeholder="Vsechna odvetvi",
+            key=f"{scope}_industry_filter",
         )
     with filter3:
         selected_signals = st.multiselect(
             "Filtr podle signalu",
             options=filter_options(results_frame, "Signal"),
             placeholder="Vsechny signaly",
+            key=f"{scope}_signal_filter",
         )
 
     filtered_frame = results_frame
@@ -900,6 +905,52 @@ def crypto_investor_table(market, sentiment, network) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def whale_transactions_frame(whales, minimum_btc: float) -> pd.DataFrame:
+    if whales is None:
+        return pd.DataFrame()
+    rows = []
+    for transaction in whales.transactions:
+        if transaction.total_output_btc < minimum_btc:
+            continue
+        rows.append(
+            {
+                "Cas": transaction.timestamp or "N/A",
+                "Blok": "N/A" if transaction.block_height is None else f"{transaction.block_height:,}",
+                "Objem BTC": f"{transaction.total_output_btc:,.2f}",
+                "Fee BTC": "N/A" if transaction.fee_btc is None else f"{transaction.fee_btc:.8f}",
+                "Vystupu": str(transaction.output_count),
+                "TXID": transaction.txid,
+                "Odkaz": transaction.link,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_onchain_volume_section(onchain_volume) -> None:
+    if onchain_volume is None:
+        return
+
+    st.markdown("---")
+    st.markdown("### Rocni on-chain objemy")
+    if not onchain_volume.estimated_volume.empty:
+        st.line_chart(onchain_volume.estimated_volume, use_container_width=True, height=300)
+        st.write(
+            "Odhadovany prevod BTC sleduje, kolik Bitcoinu se denne ekonomicky presunulo po siti. "
+            "Spicky v grafu mohou ukazovat vetsi aktivitu velkych ucastniku, burz nebo interni presuny. "
+            "Tricetidenni prumer pomaha odfiltrovat jednodenne vykyvy."
+        )
+    else:
+        st.info("Rocni odhadovany on-chain objem neni momentalne dostupny.")
+
+    if not onchain_volume.output_volume.empty:
+        with st.expander("Zobrazit celkovy vystupni objem BTC", expanded=False):
+            st.line_chart(onchain_volume.output_volume, use_container_width=True, height=260)
+            st.write(
+                "Vystupni objem zahrnuje vsechny vystupy transakci vcetne change adres, proto muze byt vyrazne vyssi. "
+                "Je uzitecny hlavne jako doplnkovy signal celkoveho zatizeni blockchainu."
+            )
+
+
 def render_bitcoin_dashboard(dashboard) -> None:
     for error in dashboard.errors:
         st.warning(error)
@@ -907,6 +958,8 @@ def render_bitcoin_dashboard(dashboard) -> None:
     market = dashboard.market
     network = dashboard.network
     sentiment = dashboard.sentiment
+    whales = dashboard.whales
+    onchain_volume = dashboard.onchain_volume
 
     if market is not None:
         st.markdown("### Bitcoin trh")
@@ -971,6 +1024,42 @@ def render_bitcoin_dashboard(dashboard) -> None:
         q3.metric("Mempool fee celkem", "N/A" if network.mempool_total_fee is None else f"{network.mempool_total_fee:,.0f} sats")
         st.write(
             "Sitova cast ukazuje, jak je Bitcoin aktualne zatizeny. Vyssi poplatky a plnejsi mempool obvykle znamenaji vyssi poptavku po blokovem prostoru."
+        )
+
+    render_onchain_volume_section(onchain_volume)
+
+    if whales is not None:
+        st.markdown("---")
+        st.markdown("### Velke on-chain pohyby")
+        minimum_btc = st.selectbox(
+            "Minimalni velikost transakce",
+            options=[50.0, 100.0, 250.0, 500.0, 1000.0],
+            index=1,
+            format_func=lambda value: f"{value:,.0f} BTC",
+            help="Filtruje velke bitcoinove transakce podle celkove hodnoty vystupu.",
+        )
+        whale_frame = whale_transactions_frame(whales, minimum_btc)
+        st.caption(
+            f"Prohledano {whales.scanned_blocks} poslednich bloku a {whales.scanned_transactions:,} transakci. "
+            "Jde o velke on-chain presuny BTC, ne o potvrzeny nakup nebo prodej."
+        )
+        if whale_frame.empty:
+            st.info("V prohledane casti poslednich bloku nejsou transakce nad zvolenym limitem.")
+        else:
+            st.dataframe(
+                whale_frame,
+                use_container_width=True,
+                hide_index=True,
+                height=360,
+                column_config={
+                    "Odkaz": st.column_config.LinkColumn("Odkaz", display_text="mempool"),
+                    "TXID": st.column_config.TextColumn("TXID", width="medium"),
+                    "Objem BTC": st.column_config.TextColumn("Objem BTC", width="small"),
+                },
+            )
+        st.write(
+            "Velky presun muze byt burzovni vklad, vyber, interni presun mezi penezenkami nebo skutecna zmena vlastnictvi. "
+            "Bez labelu adres proto aplikace netvrdi, ze jde o nakup nebo prodej."
         )
 
 
@@ -1046,6 +1135,91 @@ def render_crypto_analysis() -> None:
     render_bitcoin_dashboard(dashboard)
 
 
+def render_buffett_workspace(
+    companies,
+    scope: str,
+    manual_placeholder: str,
+    empty_list_file: str,
+) -> None:
+    company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
+
+    st.subheader("Vyber akcie")
+    control1, control2, control3, control4 = st.columns([2.2, 1.3, 1, 1])
+    with control1:
+        st.markdown("**Firma ze seznamu**")
+        selected_label = st.selectbox(
+            "Vyber firmu ze seznamu",
+            options=list(company_options.keys()) if company_options else [],
+            index=0 if company_options else None,
+            placeholder=f"Nejprve dopln {empty_list_file}",
+            label_visibility="collapsed",
+            key=f"{scope}_company_select",
+        )
+    with control2:
+        st.markdown("**Rucni ticker**")
+        manual_ticker = st.text_input(
+            "Nebo zadej ticker rucne",
+            placeholder=manual_placeholder,
+            label_visibility="collapsed",
+            key=f"{scope}_manual_ticker",
+        ).strip().upper()
+    with control3:
+        st.markdown("**Akce**")
+        analyze_clicked = st.button(
+            "Analyzovat",
+            type="primary",
+            use_container_width=True,
+            key=f"{scope}_analyze_button",
+        )
+    with control4:
+        st.markdown("**Akce**")
+        analyze_all_clicked = st.button(
+            "Hromadna analyza",
+            use_container_width=True,
+            key=f"{scope}_batch_button",
+        )
+
+    st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
+    selected_ticker = manual_ticker or company_options.get(selected_label, "")
+    main_tab, batch_tab, score_tab = st.tabs(
+        ["Analyza", "Hromadna analyza", "Jak funguje Buffett Score"]
+    )
+
+    analysis_key = f"{scope}_single_analysis"
+    ticker_key = f"{scope}_single_ticker"
+
+    with main_tab:
+        if analyze_clicked:
+            if not selected_ticker:
+                st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
+            else:
+                with st.spinner(f"Nacitam data pro {selected_ticker}..."):
+                    snapshot = load_company_snapshot(selected_ticker)
+                    st.session_state[analysis_key] = analyze_company(snapshot)
+                    st.session_state[ticker_key] = selected_ticker
+
+        if st.session_state[analysis_key] is None:
+            st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vyse a klikni na `Analyzovat`.")
+        else:
+            render_single_analysis(st.session_state[analysis_key])
+
+    with batch_tab:
+        if analyze_all_clicked:
+            if not companies:
+                st.warning(f"Seznam firem je prazdny. Nejprve dopln `{empty_list_file}`.")
+            else:
+                started = start_batch_analysis(companies, scope)
+                if started:
+                    st.success("Hromadna analyza se spustila na pozadi.")
+                else:
+                    st.info("Hromadna analyza uz bezi.")
+
+        render_batch_analysis(scope)
+
+    with score_tab:
+        render_score_explanation()
+
+
 def main() -> None:
     st.title("Buffett Analyzer")
     ensure_session_state()
@@ -1053,73 +1227,16 @@ def main() -> None:
     ensure_crypto_preload_started()
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
-    company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
-    buffett_tab, macro_tab, crypto_tab = st.tabs(
-        ["Buffett analyza", "Makroekonomika (FRED)", "Bitcoin"]
+    cz_companies = load_companies(Path(__file__).with_name("companies_cz.txt"))
+    buffett_tab, buffet_cz_tab, macro_tab, crypto_tab = st.tabs(
+        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin"]
     )
 
     with buffett_tab:
-        st.subheader("Vyber akcie")
-        control1, control2, control3, control4 = st.columns([2.2, 1.3, 1, 1])
-        with control1:
-            st.markdown("**Firma ze seznamu**")
-            selected_label = st.selectbox(
-                "Vyber firmu ze seznamu",
-                options=list(company_options.keys()) if company_options else [],
-                index=0 if company_options else None,
-                placeholder="Nejprve dopln companies.txt",
-                label_visibility="collapsed",
-            )
-        with control2:
-            st.markdown("**Rucni ticker**")
-            manual_ticker = st.text_input(
-                "Nebo zadej ticker rucne",
-                placeholder="Napr. AAPL",
-                label_visibility="collapsed",
-            ).strip().upper()
-        with control3:
-            st.markdown("**Akce**")
-            analyze_clicked = st.button("Analyzovat", type="primary", use_container_width=True)
-        with control4:
-            st.markdown("**Akce**")
-            analyze_all_clicked = st.button("Hromadna analyza", use_container_width=True)
+        render_buffett_workspace(companies, "us", "Napr. AAPL", "companies.txt")
 
-        st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
-        selected_ticker = manual_ticker or company_options.get(selected_label, "")
-        main_tab, batch_tab, score_tab = st.tabs(
-            ["Analyza", "Hromadna analyza", "Jak funguje Buffett Score"]
-        )
-
-        with main_tab:
-            if analyze_clicked:
-                if not selected_ticker:
-                    st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
-                else:
-                    with st.spinner(f"Nacitam data pro {selected_ticker}..."):
-                        snapshot = load_company_snapshot(selected_ticker)
-                        st.session_state.single_analysis = analyze_company(snapshot)
-                        st.session_state.single_ticker = selected_ticker
-
-            if st.session_state.single_analysis is None:
-                st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vyse a klikni na `Analyzovat`.")
-            else:
-                render_single_analysis(st.session_state.single_analysis)
-
-        with batch_tab:
-            if analyze_all_clicked:
-                if not companies:
-                    st.warning("Seznam firem je prazdny. Nejprve dopln `companies.txt`.")
-                else:
-                    started = start_batch_analysis(companies)
-                    if started:
-                        st.success("Hromadna analyza se spustila na pozadi.")
-                    else:
-                        st.info("Hromadna analyza uz bezi.")
-
-            render_batch_analysis()
-
-        with score_tab:
-            render_score_explanation()
+    with buffet_cz_tab:
+        render_buffett_workspace(cz_companies, "cz", "Napr. CEZ.PR", "companies_cz.txt")
 
     with macro_tab:
         render_macro_analysis()
