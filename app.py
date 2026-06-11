@@ -16,6 +16,9 @@ from data_provider import load_company_snapshot
 from fred_provider import fetch_macro_dashboard
 
 
+CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_v1"
+
+
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
 
 st.markdown(
@@ -146,6 +149,7 @@ def get_crypto_state() -> dict:
         "updated_at": "",
         "error": None,
         "started_at": "",
+        "source_version": CRYPTO_DATA_SOURCE_VERSION,
     }
 
 
@@ -733,6 +737,7 @@ def start_crypto_analysis(days: int | str = 365) -> bool:
         state["updated_at"] = ""
         state["error"] = None
         state["started_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M:%S")
+        state["source_version"] = CRYPTO_DATA_SOURCE_VERSION
 
     def worker() -> None:
         try:
@@ -762,6 +767,16 @@ def ensure_crypto_preload_started() -> None:
 def read_crypto_state() -> dict:
     state = get_crypto_state()
     with state["lock"]:
+        if state.get("source_version") != CRYPTO_DATA_SOURCE_VERSION:
+            state["running"] = False
+            state["dashboard"] = None
+            state["days"] = 365
+            state["status"] = ""
+            state["updated_at"] = ""
+            state["error"] = None
+            state["started_at"] = ""
+            state["source_version"] = CRYPTO_DATA_SOURCE_VERSION
+
         return {
             "running": state["running"],
             "dashboard": state["dashboard"],
@@ -999,6 +1014,13 @@ def render_crypto_analysis() -> None:
     dashboard = state["dashboard"]
     if dashboard is None:
         st.info("Bitcoin data zatim nejsou dostupna.")
+        return
+
+    if any("binance" in error.lower() for error in dashboard.errors):
+        start_crypto_analysis(selected_days)
+        st.session_state.crypto_last_completed_at = ""
+        st.info("Odstranuji stara Binance data z pameti a nacitam Bitcoin z aktualnich zdroju.")
+        render_bitcoin_loading_view()
         return
 
     render_bitcoin_dashboard(dashboard)
