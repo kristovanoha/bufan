@@ -11,6 +11,7 @@ import streamlit as st
 
 from analyzer import analyze_company
 from company_loader import load_companies
+from crypto_provider import fetch_crypto_dashboard
 from data_provider import load_company_snapshot
 from fred_provider import fetch_macro_dashboard
 
@@ -130,6 +131,19 @@ def get_macro_state() -> dict:
         "done": 0,
         "total": 0,
         "started_at": "",
+    }
+
+
+@st.cache_resource
+def get_crypto_state() -> dict:
+    return {
+        "lock": Lock(),
+        "running": False,
+        "dashboard": None,
+        "days": 365,
+        "status": "",
+        "updated_at": "",
+        "error": None,
     }
 
 
@@ -705,6 +719,267 @@ def render_macro_analysis() -> None:
     render_macro_sections(state["results"])
 
 
+def start_crypto_analysis(days: int | str = 365) -> bool:
+    state = get_crypto_state()
+    with state["lock"]:
+        if state["running"]:
+            return False
+        state["running"] = True
+        state["dashboard"] = None
+        state["days"] = days
+        state["status"] = "Nacitam bitcoinova data..."
+        state["updated_at"] = ""
+        state["error"] = None
+
+    def worker() -> None:
+        try:
+            dashboard = fetch_crypto_dashboard(days)
+            with state["lock"]:
+                state["dashboard"] = dashboard
+                state["running"] = False
+                state["status"] = "Krypto data nactena."
+                state["updated_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")
+        except Exception as exc:
+            with state["lock"]:
+                state["running"] = False
+                state["error"] = str(exc)
+                state["status"] = "Krypto data se nepodarilo nacist."
+
+    Thread(target=worker, daemon=True).start()
+    return True
+
+
+def ensure_crypto_preload_started() -> None:
+    state = read_crypto_state()
+    if state["running"] or state["dashboard"] is not None or state["error"]:
+        return
+    start_crypto_analysis()
+
+
+def read_crypto_state() -> dict:
+    state = get_crypto_state()
+    with state["lock"]:
+        return {
+            "running": state["running"],
+            "dashboard": state["dashboard"],
+            "days": state["days"],
+            "status": state["status"],
+            "updated_at": state["updated_at"],
+            "error": state["error"],
+        }
+
+
+def format_crypto_money(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def format_crypto_large_money(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    if abs(value) >= 1_000_000_000_000:
+        return f"${value / 1_000_000_000_000:,.2f}T"
+    if abs(value) >= 1_000_000_000:
+        return f"${value / 1_000_000_000:,.2f}B"
+    if abs(value) >= 1_000_000:
+        return f"${value / 1_000_000:,.2f}M"
+    return f"${value:,.0f}"
+
+
+def format_crypto_percent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f} %"
+
+
+def format_fee(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.0f} sat/vB"
+
+
+def crypto_period_options() -> dict[str, int | str]:
+    return {
+        "30 dni": 30,
+        "1 rok": 365,
+        "5 let": 1825,
+        "Maximum": "max",
+    }
+
+
+def build_drawdown_frame(history: pd.DataFrame) -> pd.DataFrame:
+    if history.empty or "Cena BTC" not in history:
+        return pd.DataFrame()
+    price = history["Cena BTC"].dropna()
+    if price.empty:
+        return pd.DataFrame()
+    drawdown = (price / price.cummax() - 1) * 100
+    return pd.DataFrame({"Propad od maxima": drawdown})
+
+
+def crypto_investor_table(market, sentiment, network) -> pd.DataFrame:
+    rows = []
+    if market is not None:
+        rows.append(
+            {
+                "Oblast": "Cena vs. historie",
+                "Hodnota": format_crypto_percent(market.ath_change_pct),
+                "Proc je dulezite": "Ukazuje, jak daleko je BTC od historickeho maxima. Velky propad muze znamenat vetsi riziko i vetsi potencial, ale sam o sobe neni signal k nakupu.",
+            }
+        )
+        rows.append(
+            {
+                "Oblast": "Likvidita trhu",
+                "Hodnota": format_crypto_large_money(market.volume_24h_usd),
+                "Proc je dulezite": "Vyssi objem znamena aktivnejsi trh. Pohyb ceny pri nizkem objemu muze byt mene presvedcivy.",
+            }
+        )
+    if sentiment is not None:
+        rows.append(
+            {
+                "Oblast": "Sentiment",
+                "Hodnota": "N/A" if sentiment.value is None else f"{sentiment.value} / 100 ({sentiment.classification or 'N/A'})",
+                "Proc je dulezite": "Extreme fear muze ukazovat paniku, extreme greed prehraty trh. Je to doplnek, ne samostatne pravidlo.",
+            }
+        )
+    if network is not None:
+        rows.append(
+            {
+                "Oblast": "Poplatky v siti",
+                "Hodnota": format_fee(network.half_hour_fee),
+                "Proc je dulezite": "Vyssi fee obvykle znamena vyssi poptavku po blockspace. Pro investora je to signal aktivity site, ne primo oceneni BTC.",
+            }
+        )
+        rows.append(
+            {
+                "Oblast": "Mempool",
+                "Hodnota": "N/A" if network.mempool_count is None else f"{network.mempool_count:,} transakci",
+                "Proc je dulezite": "Plnejsi mempool ukazuje, ze vice transakci ceka na potvrzeni. Pomaha cist aktualni zatizeni bitcoinove site.",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_crypto_analysis() -> None:
+    st.subheader("Krypto")
+    st.write(
+        "Bitcoinovy prehled kombinuje trzni data, stav site a sentiment trhu. "
+        "Slouzi pro rychlou orientaci investora, ne jako investicni doporuceni."
+    )
+    st.caption("Zdroje dat: CoinGecko, Binance, mempool.space a Alternative.me. Pri chybejicich datech se zobrazi N/A.")
+
+    period_options = crypto_period_options()
+    selected_period_label = st.selectbox(
+        "Obdobi grafu",
+        options=list(period_options.keys()),
+        index=1,
+        help="Meni historicke obdobi pro cenovy graf a drawdown graf.",
+    )
+    selected_days = period_options[selected_period_label]
+
+    state = read_crypto_state()
+    period_changed = state["days"] != selected_days
+    if (state["dashboard"] is None or period_changed) and not state["running"]:
+        start_crypto_analysis(selected_days)
+        state = read_crypto_state()
+
+    control1, control2 = st.columns([1, 3])
+    with control1:
+        if st.button("Obnovit krypto data", use_container_width=True):
+            start_crypto_analysis(selected_days)
+            state = read_crypto_state()
+    with control2:
+        if state["updated_at"]:
+            st.caption(f"Posledni nacteni: {state['updated_at']}")
+
+    if state["running"]:
+        st.info("Krypto data se nacitaji na pozadi.")
+        st.caption(state["status"])
+        if state["dashboard"] is None:
+            return
+
+    if state["error"]:
+        st.warning(state["error"])
+
+    dashboard = state["dashboard"]
+    if dashboard is None:
+        st.info("Krypto data zatim nejsou dostupna.")
+        return
+
+    for error in dashboard.errors:
+        st.warning(error)
+
+    market = dashboard.market
+    network = dashboard.network
+    sentiment = dashboard.sentiment
+
+    if market is not None:
+        st.markdown("### Bitcoin trh")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Cena BTC", format_crypto_money(market.price_usd), format_crypto_percent(market.price_change_24h_pct))
+        m2.metric("Market cap", format_crypto_large_money(market.market_cap_usd))
+        m3.metric("Objem 24h", format_crypto_large_money(market.volume_24h_usd))
+        m4.metric("Propad od ATH", format_crypto_percent(market.ath_change_pct))
+
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Zmena 7d", format_crypto_percent(market.price_change_7d_pct))
+        p2.metric("Zmena 30d", format_crypto_percent(market.price_change_30d_pct))
+        p3.metric("Zmena 1 rok", format_crypto_percent(market.price_change_1y_pct))
+        p4.metric("ATH", format_crypto_money(market.ath_usd))
+
+        if not market.history.empty:
+            st.line_chart(market.history, use_container_width=True, height=340)
+            drawdown_frame = build_drawdown_frame(market.history)
+            if not drawdown_frame.empty:
+                st.markdown("### Propad od maxima")
+                st.line_chart(drawdown_frame, use_container_width=True, height=260)
+                st.write(
+                    "Drawdown ukazuje, o kolik procent je Bitcoin pod dosavadnim maximem v danem obdobi. "
+                    "Pro dlouhodobeho investora je to uzitecnejsi pohled na riziko nez samotna cena."
+                )
+        st.write(
+            "Trzni cast ukazuje, kde je Bitcoin cenove vuci poslednim obdobim a jak daleko je od historickeho maxima. "
+            "Objem 24h pomaha cist, jestli se pohyb deje pri vyssi nebo nizsi aktivite trhu."
+        )
+
+        investor_frame = crypto_investor_table(market, sentiment, network)
+        if not investor_frame.empty:
+            st.markdown("### Co sledovat jako investor")
+            st.dataframe(investor_frame, use_container_width=True, hide_index=True, height=260)
+
+    if sentiment is not None:
+        st.markdown("---")
+        st.markdown("### Sentiment trhu")
+        s1, s2 = st.columns(2)
+        s1.metric("Fear & Greed Index", "N/A" if sentiment.value is None else str(sentiment.value), sentiment.classification or "N/A")
+        s2.metric("Datum sentimentu", sentiment.updated_at or "N/A")
+        if not sentiment.history.empty:
+            chart = sentiment.history[["Fear & Greed"]]
+            st.line_chart(chart, use_container_width=True, height=260)
+        st.write(
+            "Fear & Greed index meri naladu trhu od 0 do 100. Nizke hodnoty ukazuji strach, vysoke hodnoty chamtivost. "
+            "Je to sentimentovy doplnek k cene, ne samostatny signal k nakupu nebo prodeji."
+        )
+
+    if network is not None:
+        st.markdown("---")
+        st.markdown("### Bitcoin sit")
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("Nejrychlejsi fee", format_fee(network.fastest_fee))
+        n2.metric("Fee do 30 min", format_fee(network.half_hour_fee))
+        n3.metric("Fee do 60 min", format_fee(network.hour_fee))
+        n4.metric("Posledni blok", "N/A" if network.tip_height is None else f"{network.tip_height:,}")
+
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Transakce v mempoolu", "N/A" if network.mempool_count is None else f"{network.mempool_count:,}")
+        q2.metric("Mempool vsize", "N/A" if network.mempool_vsize is None else f"{network.mempool_vsize:,.0f} vB")
+        q3.metric("Mempool fee celkem", "N/A" if network.mempool_total_fee is None else f"{network.mempool_total_fee:,.0f} sats")
+        st.write(
+            "Sitova cast ukazuje, jak je Bitcoin aktualne zatizeny. Vyssi poplatky a plnejsi mempool obvykle znamenaji vyssi poptavku po blokovem prostoru."
+        )
+
+
 def render_placeholder_tab(title: str) -> None:
     st.subheader(title)
     st.info("Tato sekce je zatim pripravena pro dalsi vypocty a rozsireni.")
@@ -716,11 +991,12 @@ def main() -> None:
     st.caption("Osobni fundamentalni analyza USA akcii inspirovana principy Warrena Buffetta.")
     ensure_session_state()
     ensure_macro_preload_started()
+    ensure_crypto_preload_started()
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
-    buffett_tab, macro_tab, future_tab_one, future_tab_two = st.tabs(
-        ["Buffett analyza", "Makroekonomika (FRED)", "Dalsi analyza 1", "Dalsi analyza 2"]
+    buffett_tab, macro_tab, crypto_tab, future_tab_one, future_tab_two = st.tabs(
+        ["Buffett analyza", "Makroekonomika (FRED)", "Krypto", "Dalsi analyza 1", "Dalsi analyza 2"]
     )
 
     with buffett_tab:
@@ -794,6 +1070,9 @@ def main() -> None:
 
     with macro_tab:
         render_macro_analysis()
+
+    with crypto_tab:
+        render_crypto_analysis()
 
 
 if __name__ == "__main__":
