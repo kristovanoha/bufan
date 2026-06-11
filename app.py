@@ -102,6 +102,7 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("single_analysis", None)
     st.session_state.setdefault("single_ticker", "")
     st.session_state.setdefault("macro_last_completed_at", "")
+    st.session_state.setdefault("crypto_last_completed_at", "")
 
 
 @st.cache_resource
@@ -144,6 +145,7 @@ def get_crypto_state() -> dict:
         "status": "",
         "updated_at": "",
         "error": None,
+        "started_at": "",
     }
 
 
@@ -730,6 +732,7 @@ def start_crypto_analysis(days: int | str = 365) -> bool:
         state["status"] = "Nacitam bitcoinova data..."
         state["updated_at"] = ""
         state["error"] = None
+        state["started_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M:%S")
 
     def worker() -> None:
         try:
@@ -737,13 +740,13 @@ def start_crypto_analysis(days: int | str = 365) -> bool:
             with state["lock"]:
                 state["dashboard"] = dashboard
                 state["running"] = False
-                state["status"] = "Krypto data nactena."
+                state["status"] = "Bitcoin data nactena."
                 state["updated_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")
         except Exception as exc:
             with state["lock"]:
                 state["running"] = False
                 state["error"] = str(exc)
-                state["status"] = "Krypto data se nepodarilo nacist."
+                state["status"] = "Bitcoin data se nepodarilo nacist."
 
     Thread(target=worker, daemon=True).start()
     return True
@@ -766,6 +769,7 @@ def read_crypto_state() -> dict:
             "status": state["status"],
             "updated_at": state["updated_at"],
             "error": state["error"],
+            "started_at": state["started_at"],
         }
 
 
@@ -861,52 +865,7 @@ def crypto_investor_table(market, sentiment, network) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def render_crypto_analysis() -> None:
-    st.subheader("Krypto")
-    st.write(
-        "Bitcoinovy prehled kombinuje trzni data, stav site a sentiment trhu. "
-        "Slouzi pro rychlou orientaci investora, ne jako investicni doporuceni."
-    )
-    st.caption("Zdroje dat: CoinGecko, Binance, mempool.space a Alternative.me. Pri chybejicich datech se zobrazi N/A.")
-
-    period_options = crypto_period_options()
-    selected_period_label = st.selectbox(
-        "Obdobi grafu",
-        options=list(period_options.keys()),
-        index=1,
-        help="Meni historicke obdobi pro cenovy graf a drawdown graf.",
-    )
-    selected_days = period_options[selected_period_label]
-
-    state = read_crypto_state()
-    period_changed = state["days"] != selected_days
-    if (state["dashboard"] is None or period_changed) and not state["running"]:
-        start_crypto_analysis(selected_days)
-        state = read_crypto_state()
-
-    control1, control2 = st.columns([1, 3])
-    with control1:
-        if st.button("Obnovit krypto data", use_container_width=True):
-            start_crypto_analysis(selected_days)
-            state = read_crypto_state()
-    with control2:
-        if state["updated_at"]:
-            st.caption(f"Posledni nacteni: {state['updated_at']}")
-
-    if state["running"]:
-        st.info("Krypto data se nacitaji na pozadi.")
-        st.caption(state["status"])
-        if state["dashboard"] is None:
-            return
-
-    if state["error"]:
-        st.warning(state["error"])
-
-    dashboard = state["dashboard"]
-    if dashboard is None:
-        st.info("Krypto data zatim nejsou dostupna.")
-        return
-
+def render_bitcoin_dashboard(dashboard) -> None:
     for error in dashboard.errors:
         st.warning(error)
 
@@ -980,23 +939,81 @@ def render_crypto_analysis() -> None:
         )
 
 
-def render_placeholder_tab(title: str) -> None:
-    st.subheader(title)
-    st.info("Tato sekce je zatim pripravena pro dalsi vypocty a rozsireni.")
-    st.caption("Tato zalozka je zatim prazdna a pripravena pro samostatnou analyzu.")
+@st.fragment(run_every=1)
+def render_bitcoin_loading_view() -> None:
+    state = read_crypto_state()
+    if state["running"]:
+        st.info("Bitcoin data se nacitaji na pozadi.")
+        st.caption(state["status"])
+        return
+
+    if state["updated_at"] and st.session_state.crypto_last_completed_at != state["updated_at"]:
+        st.session_state.crypto_last_completed_at = state["updated_at"]
+        st.rerun()
+
+    if state["error"]:
+        st.warning(state["error"])
+
+
+def render_crypto_analysis() -> None:
+    st.subheader("Bitcoin")
+    st.write(
+        "Bitcoinovy prehled kombinuje trzni data, stav site a sentiment trhu. "
+        "Slouzi pro rychlou orientaci investora, ne jako investicni doporuceni."
+    )
+    st.caption("Zdroje dat: CoinGecko, Binance, mempool.space a Alternative.me. Pri chybejicich datech se zobrazi N/A.")
+
+    period_options = crypto_period_options()
+    selected_period_label = st.selectbox(
+        "Obdobi grafu",
+        options=list(period_options.keys()),
+        index=1,
+        help="Meni historicke obdobi pro cenovy graf a drawdown graf.",
+    )
+    selected_days = period_options[selected_period_label]
+
+    state = read_crypto_state()
+    period_changed = state["days"] != selected_days
+    if (state["dashboard"] is None or period_changed) and not state["running"]:
+        start_crypto_analysis(selected_days)
+        st.session_state.crypto_last_completed_at = ""
+        state = read_crypto_state()
+
+    control1, control2 = st.columns([1, 3])
+    with control1:
+        if st.button("Obnovit krypto data", use_container_width=True):
+            start_crypto_analysis(selected_days)
+            st.session_state.crypto_last_completed_at = ""
+            state = read_crypto_state()
+    with control2:
+        if state["updated_at"]:
+            st.caption(f"Posledni nacteni: {state['updated_at']}")
+
+    if state["running"]:
+        render_bitcoin_loading_view()
+        return
+
+    if state["error"]:
+        st.warning(state["error"])
+
+    dashboard = state["dashboard"]
+    if dashboard is None:
+        st.info("Bitcoin data zatim nejsou dostupna.")
+        return
+
+    render_bitcoin_dashboard(dashboard)
 
 
 def main() -> None:
     st.title("Buffett Analyzer")
-    st.caption("Osobni fundamentalni analyza USA akcii inspirovana principy Warrena Buffetta.")
     ensure_session_state()
     ensure_macro_preload_started()
     ensure_crypto_preload_started()
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     company_options = {f"{company.ticker} | {company.name}": company.ticker for company in companies}
-    buffett_tab, macro_tab, crypto_tab, future_tab_one, future_tab_two = st.tabs(
-        ["Buffett analyza", "Makroekonomika (FRED)", "Krypto", "Dalsi analyza 1", "Dalsi analyza 2"]
+    buffett_tab, macro_tab, crypto_tab = st.tabs(
+        ["Buffett analyza", "Makroekonomika (FRED)", "Bitcoin"]
     )
 
     with buffett_tab:
@@ -1061,12 +1078,6 @@ def main() -> None:
 
         with score_tab:
             render_score_explanation()
-
-    with future_tab_one:
-        render_placeholder_tab("Dalsi analyza 1")
-
-    with future_tab_two:
-        render_placeholder_tab("Dalsi analyza 2")
 
     with macro_tab:
         render_macro_analysis()
