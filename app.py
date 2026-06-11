@@ -27,7 +27,7 @@ st.markdown(
     .block-container {
         padding-top: 1.2rem;
         padding-bottom: 1rem;
-        max-width: 1400px;
+        max-width: 98vw;
     }
     div[data-testid="stMetricValue"] {
         font-size: 1.15rem;
@@ -184,15 +184,15 @@ def build_batch_row(analysis) -> dict[str, str]:
         "Firma": company.company_name,
         "Sektor": company.sector or "N/A",
         "Odvetvi": company.industry or "N/A",
-        "Aktualni cena": format_value(current_price, "currency_decimal", company.currency),
+        "Cena": format_value(current_price, "currency_decimal", company.currency),
         "P/E": format_value(trailing_pe),
-        "Dividenda 5Y prumer": format_percent_points(dividend_yield_5y),
-        "Vnitrni hodnota": format_value(intrinsic_value, "currency_decimal", company.currency),
+        "Div. 5Y": format_percent_points(dividend_yield_5y),
+        "Vnitrni hodn.": format_value(intrinsic_value, "currency_decimal", company.currency),
         "Nakupni cena": format_value(buy_under_price, "currency_decimal", company.currency),
-        "Buffett Score": score_text,
+        "Score": score_text,
         "Signal": signal,
         "Valuace": valuation,
-        "Rozdil k nakupni cene": price_gap,
+        "Rozdil": price_gap,
         "Varovani": str(len(analysis.warnings)),
     }
 
@@ -204,6 +204,25 @@ def style_batch_results(frame: pd.DataFrame):
         return [""] * len(row)
 
     return frame.style.apply(row_style, axis=1)
+
+
+def batch_column_config() -> dict:
+    return {
+        "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+        "Firma": st.column_config.TextColumn("Firma", width="medium"),
+        "Sektor": st.column_config.TextColumn("Sektor", width="medium"),
+        "Odvetvi": st.column_config.TextColumn("Odvetvi", width="medium"),
+        "Cena": st.column_config.TextColumn("Cena", width="small"),
+        "P/E": st.column_config.TextColumn("P/E", width="small"),
+        "Div. 5Y": st.column_config.TextColumn("Div. 5Y", width="small"),
+        "Vnitrni hodn.": st.column_config.TextColumn("Vnitrni hodn.", width="small"),
+        "Nakupni cena": st.column_config.TextColumn("Nakupni cena", width="small"),
+        "Score": st.column_config.TextColumn("Score", width="small"),
+        "Signal": st.column_config.TextColumn("Signal", width="medium"),
+        "Valuace": st.column_config.TextColumn("Valuace", width="medium"),
+        "Rozdil": st.column_config.TextColumn("Rozdil", width="small"),
+        "Varovani": st.column_config.TextColumn("Varovani", width="small"),
+    }
 
 
 def filter_options(frame: pd.DataFrame, column: str) -> list[str]:
@@ -219,15 +238,15 @@ def build_failed_batch_row(company, error: Exception) -> dict[str, str]:
         "Firma": company.name,
         "Sektor": "N/A",
         "Odvetvi": "N/A",
-        "Aktualni cena": "N/A",
+        "Cena": "N/A",
         "P/E": "N/A",
-        "Dividenda 5Y prumer": "N/A",
-        "Vnitrni hodnota": "N/A",
+        "Div. 5Y": "N/A",
+        "Vnitrni hodn.": "N/A",
         "Nakupni cena": "N/A",
-        "Buffett Score": "N/A",
+        "Score": "N/A",
         "Signal": "Chyba analyzy",
         "Valuace": "N/A",
-        "Rozdil k nakupni cene": "N/A",
+        "Rozdil": "N/A",
         "Varovani": f"1: {error}",
     }
 
@@ -504,6 +523,7 @@ def render_batch_analysis() -> None:
         use_container_width=True,
         hide_index=True,
         height=900,
+        column_config=batch_column_config(),
     )
 
     if state["running"]:
