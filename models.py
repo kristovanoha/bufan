@@ -31,6 +31,7 @@ class CompanySnapshot:
     shares_outstanding: float | None = None
     trailing_pe: float | None = None
     trailing_eps: float | None = None
+    last_year_dividend_yield: float | None = None
     five_year_avg_dividend_yield: float | None = None
     owner_earnings: float | None = None
     intrinsic_value_per_share: float | None = None

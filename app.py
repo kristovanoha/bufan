@@ -166,6 +166,7 @@ def build_batch_row(analysis) -> dict[str, str]:
     intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
     buy_under_price = getattr(company, "buy_under_price", None)
     trailing_pe = getattr(company, "trailing_pe", None)
+    last_year_dividend_yield = getattr(company, "last_year_dividend_yield", None)
     dividend_yield_5y = getattr(company, "five_year_avg_dividend_yield", None)
 
     if current_price is not None and buy_under_price is not None and current_price != 0:
@@ -194,6 +195,7 @@ def build_batch_row(analysis) -> dict[str, str]:
         "Cena": format_value(current_price, "currency_decimal", company.currency),
         "P/E": format_value(trailing_pe),
         "Div. 5Y": format_percent_points(dividend_yield_5y),
+        "Div. 1Y": format_percent_points(last_year_dividend_yield),
         "Vnitrni hodn.": format_value(intrinsic_value, "currency_decimal", company.currency),
         "Nakupni cena": format_value(buy_under_price, "currency_decimal", company.currency),
         "Score": score_text,
@@ -222,6 +224,7 @@ def batch_column_config() -> dict:
         "Cena": st.column_config.TextColumn("Cena", width="small"),
         "P/E": st.column_config.TextColumn("P/E", width="small"),
         "Div. 5Y": st.column_config.TextColumn("Div. 5Y", width="small"),
+        "Div. 1Y": st.column_config.TextColumn("Div. 1Y", width="small"),
         "Vnitrni hodn.": st.column_config.TextColumn("Vnitrni hodn.", width="small"),
         "Nakupni cena": st.column_config.TextColumn("Nakupni cena", width="small"),
         "Score": st.column_config.TextColumn("Score", width="small"),
@@ -230,6 +233,29 @@ def batch_column_config() -> dict:
         "Rozdil": st.column_config.TextColumn("Rozdil", width="small"),
         "Varovani": st.column_config.TextColumn("Varovani", width="small"),
     }
+
+
+def batch_column_order(show_last_year_dividend: bool = False) -> list[str]:
+    columns = [
+        "Ticker",
+        "Firma",
+        "Sektor",
+        "Odvetvi",
+        "Cena",
+        "P/E",
+        "Div. 5Y",
+        "Div. 1Y",
+        "Vnitrni hodn.",
+        "Nakupni cena",
+        "Score",
+        "Signal",
+        "Valuace",
+        "Rozdil",
+        "Varovani",
+    ]
+    if not show_last_year_dividend:
+        columns.remove("Div. 1Y")
+    return columns
 
 
 def filter_options(frame: pd.DataFrame, column: str) -> list[str]:
@@ -248,6 +274,7 @@ def build_failed_batch_row(company, error: Exception) -> dict[str, str]:
         "Cena": "N/A",
         "P/E": "N/A",
         "Div. 5Y": "N/A",
+        "Div. 1Y": "N/A",
         "Vnitrni hodn.": "N/A",
         "Nakupni cena": "N/A",
         "Score": "N/A",
@@ -492,7 +519,10 @@ def render_batch_analysis(scope: str = "us") -> None:
         return
 
     results_frame = pd.DataFrame(results)
-    filter1, filter2, filter3 = st.columns(3)
+    if "Div. 1Y" not in results_frame:
+        results_frame["Div. 1Y"] = "N/A"
+
+    filter1, filter2, filter3, filter4 = st.columns([1, 1, 1, 0.9])
     with filter1:
         selected_sectors = st.multiselect(
             "Filtr podle sektoru",
@@ -514,6 +544,13 @@ def render_batch_analysis(scope: str = "us") -> None:
             placeholder="Vsechny signaly",
             key=f"{scope}_signal_filter",
         )
+    with filter4:
+        show_last_year_dividend = st.checkbox(
+            "Zobrazit Div. 1Y",
+            value=False,
+            help="Zobrazi dividendovy vynos za poslednich 12 mesicu. Sloupec je defaultne skryty.",
+            key=f"{scope}_show_last_year_dividend",
+        )
 
     filtered_frame = results_frame
     if selected_sectors:
@@ -533,6 +570,7 @@ def render_batch_analysis(scope: str = "us") -> None:
         use_container_width=True,
         hide_index=True,
         height=900,
+        column_order=batch_column_order(show_last_year_dividend),
         column_config=batch_column_config(),
     )
 
