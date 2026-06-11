@@ -57,6 +57,14 @@ def format_value(value: float | str | None, unit: str = "", currency: str | None
     return f"{value:,.2f}"
 
 
+def format_percent_points(value: float | str | None) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, str):
+        return value
+    return f"{value:.2f} %"
+
+
 def metrics_dataframe(metrics, currency: str | None) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -130,6 +138,8 @@ def build_batch_row(analysis) -> dict[str, str]:
     current_price = getattr(company, "current_price", None)
     intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
     buy_under_price = getattr(company, "buy_under_price", None)
+    trailing_pe = getattr(company, "trailing_pe", None)
+    dividend_yield_5y = getattr(company, "five_year_avg_dividend_yield", None)
 
     if current_price is not None and buy_under_price is not None and current_price != 0:
         upside_pct = ((buy_under_price - current_price) / current_price) * 100
@@ -152,7 +162,11 @@ def build_batch_row(analysis) -> dict[str, str]:
     return {
         "Ticker": company.ticker,
         "Firma": company.company_name,
+        "Sektor": company.sector or "N/A",
+        "Odvetvi": company.industry or "N/A",
         "Aktualni cena": format_value(current_price, "currency_decimal", company.currency),
+        "P/E": format_value(trailing_pe),
+        "Dividenda 5Y prumer": format_percent_points(dividend_yield_5y),
         "Vnitrni hodnota": format_value(intrinsic_value, "currency_decimal", company.currency),
         "Nakupni cena": format_value(buy_under_price, "currency_decimal", company.currency),
         "Buffett Score": score_text,
@@ -172,11 +186,22 @@ def style_batch_results(frame: pd.DataFrame):
     return frame.style.apply(row_style, axis=1)
 
 
+def filter_options(frame: pd.DataFrame, column: str) -> list[str]:
+    if column not in frame:
+        return []
+    values = [value for value in frame[column].dropna().unique().tolist() if value != "N/A"]
+    return sorted(str(value) for value in values)
+
+
 def build_failed_batch_row(company, error: Exception) -> dict[str, str]:
     return {
         "Ticker": company.ticker,
         "Firma": company.name,
+        "Sektor": "N/A",
+        "Odvetvi": "N/A",
         "Aktualni cena": "N/A",
+        "P/E": "N/A",
+        "Dividenda 5Y prumer": "N/A",
         "Vnitrni hodnota": "N/A",
         "Nakupni cena": "N/A",
         "Buffett Score": "N/A",
@@ -420,8 +445,42 @@ def render_batch_analysis() -> None:
             st.rerun()
         return
 
+    results_frame = pd.DataFrame(results)
+    filter1, filter2, filter3 = st.columns(3)
+    with filter1:
+        selected_sectors = st.multiselect(
+            "Filtr podle sektoru",
+            options=filter_options(results_frame, "Sektor"),
+            placeholder="Vsechny sektory",
+        )
+    with filter2:
+        selected_industries = st.multiselect(
+            "Filtr podle odvetvi",
+            options=filter_options(results_frame, "Odvetvi"),
+            placeholder="Vsechna odvetvi",
+        )
+    with filter3:
+        selected_signals = st.multiselect(
+            "Filtr podle signalu",
+            options=filter_options(results_frame, "Signal"),
+            placeholder="Vsechny signaly",
+        )
+
+    filtered_frame = results_frame
+    if selected_sectors:
+        filtered_frame = filtered_frame[filtered_frame["Sektor"].isin(selected_sectors)]
+    if selected_industries:
+        filtered_frame = filtered_frame[filtered_frame["Odvetvi"].isin(selected_industries)]
+    if selected_signals:
+        filtered_frame = filtered_frame[filtered_frame["Signal"].isin(selected_signals)]
+
+    st.caption(f"Zobrazeno {len(filtered_frame)} z {len(results_frame)} firem.")
+    if filtered_frame.empty:
+        st.warning("Pro zvolene filtry nejsou dostupne zadne firmy.")
+        return
+
     st.dataframe(
-        style_batch_results(pd.DataFrame(results)),
+        style_batch_results(filtered_frame),
         use_container_width=True,
         hide_index=True,
         height=900,

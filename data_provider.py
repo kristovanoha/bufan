@@ -91,6 +91,7 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         shares_outstanding = _normalize_number(_safe_get(info, "sharesOutstanding", "impliedSharesOutstanding"))
     trailing_pe = _normalize_number(_safe_get(info, "trailingPE"))
     trailing_eps = _normalize_number(_safe_get(info, "trailingEps"))
+    five_year_avg_dividend_yield = _normalize_number(_safe_get(info, "fiveYearAvgDividendYield"))
     current_ratio = _normalize_number(_safe_get(info, "currentRatio"))
     return_on_equity = _normalize_number(_safe_get(info, "returnOnEquity"))
     debt_to_equity = _normalize_number(_safe_get(info, "debtToEquity"))
@@ -141,6 +142,7 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         (market_cap, "Market Cap"),
         (shares_outstanding, "Shares Outstanding"),
         (trailing_pe, "Trailing P/E"),
+        (five_year_avg_dividend_yield, "5Y Average Dividend Yield"),
         (return_on_equity, "ROE"),
         (debt_to_equity, "Debt/Equity"),
         (operating_margin, "Operating Margin"),
@@ -161,6 +163,7 @@ def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
         shares_outstanding=shares_outstanding,
         trailing_pe=trailing_pe,
         trailing_eps=trailing_eps,
+        five_year_avg_dividend_yield=five_year_avg_dividend_yield,
         current_ratio=current_ratio,
         return_on_equity=return_on_equity,
         debt_to_equity=debt_to_equity,
