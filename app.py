@@ -961,7 +961,7 @@ def render_crypto_analysis() -> None:
         "Bitcoinovy prehled kombinuje trzni data, stav site a sentiment trhu. "
         "Slouzi pro rychlou orientaci investora, ne jako investicni doporuceni."
     )
-    st.caption("Zdroje dat: CoinGecko, Binance, mempool.space a Alternative.me. Pri chybejicich datech se zobrazi N/A.")
+    st.caption("Zdroje dat: CoinGecko, Yahoo Finance pres yfinance, mempool.space a Alternative.me. Pri chybejicich datech se zobrazi N/A.")
 
     period_options = crypto_period_options()
     selected_period_label = st.selectbox(

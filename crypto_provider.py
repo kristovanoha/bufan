@@ -8,10 +8,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import pandas as pd
+import yfinance as yf
 
 
 COINGECKO_API_BASE = "https://api.coingecko.com/api/v3"
-BINANCE_API_BASE = "https://api.binance.com/api/v3"
 MEMPOOL_API_BASE = "https://mempool.space/api"
 ALTERNATIVE_API_BASE = "https://api.alternative.me"
 
@@ -89,50 +89,22 @@ def _normalize_int(value) -> int | None:
 
 
 def fetch_bitcoin_price_history(days: int | str = 365) -> pd.DataFrame:
-    end = pd.Timestamp.now(tz="UTC")
     if days == "max":
-        start = pd.Timestamp("2017-08-17", tz="UTC")
+        period = "max"
     else:
-        start = end - pd.Timedelta(days=int(days))
+        period = f"{max(int(days), 1)}d"
 
-    rows = []
-    current_start = start
-    one_day_ms = 24 * 60 * 60 * 1000
-
-    while current_start < end:
-        params = urlencode(
-            {
-                "symbol": "BTCUSDT",
-                "interval": "1d",
-                "startTime": int(current_start.timestamp() * 1000),
-                "endTime": int(end.timestamp() * 1000),
-                "limit": 1000,
-            }
-        )
-        payload = _request_json(f"{BINANCE_API_BASE}/klines?{params}")
-        if not isinstance(payload, list) or not payload:
-            break
-
-        for item in payload:
-            if len(item) < 5:
-                continue
-            rows.append(
-                {
-                    "date": pd.to_datetime(item[0], unit="ms"),
-                    "Cena BTC": _normalize_number(item[4]),
-                }
-            )
-
-        last_open_time = payload[-1][0]
-        next_start_ms = int(last_open_time) + one_day_ms
-        if next_start_ms <= int(current_start.timestamp() * 1000):
-            break
-        current_start = pd.to_datetime(next_start_ms, unit="ms", utc=True)
-
-    history = pd.DataFrame(rows).dropna().drop_duplicates(subset=["date"])
+    ticker = yf.Ticker("BTC-USD")
+    history = ticker.history(period=period, interval="1d", auto_adjust=False)
     if history.empty:
-        return history
-    return history.sort_values("date").set_index("date")
+        return pd.DataFrame()
+
+    frame = history.reset_index()
+    date_column = "Date" if "Date" in frame.columns else frame.columns[0]
+    frame = frame.rename(columns={date_column: "date", "Close": "Cena BTC"})
+    frame = frame[["date", "Cena BTC"]].dropna()
+    frame["date"] = pd.to_datetime(frame["date"]).dt.tz_localize(None)
+    return frame.sort_values("date").set_index("date")
 
 
 def fetch_bitcoin_market_data(days: int | str = 365) -> BitcoinMarketData:
