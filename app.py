@@ -16,7 +16,7 @@ from data_provider import load_company_snapshot
 from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 
 
-CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_v1"
+CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_whales_v2"
 FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
     definition.series_id for definition in FRED_SERIES_DEFINITIONS
 )
@@ -1354,8 +1354,8 @@ def render_bitcoin_dashboard(dashboard) -> None:
     market = dashboard.market
     network = dashboard.network
     sentiment = dashboard.sentiment
-    whales = dashboard.whales
-    onchain_volume = dashboard.onchain_volume
+    whales = getattr(dashboard, "whales", None)
+    onchain_volume = getattr(dashboard, "onchain_volume", None)
 
     if market is not None:
         st.markdown("### Bitcoin trh")
