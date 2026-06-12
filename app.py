@@ -109,6 +109,8 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("us_single_ticker", st.session_state.get("single_ticker", ""))
     st.session_state.setdefault("cz_single_analysis", None)
     st.session_state.setdefault("cz_single_ticker", "")
+    st.session_state.setdefault("us_active_buffett_section", "Analyza")
+    st.session_state.setdefault("cz_active_buffett_section", "Analyza")
     st.session_state.setdefault("macro_last_completed_at", "")
     st.session_state.setdefault("crisis_last_completed_at", "")
     st.session_state.setdefault("crypto_last_completed_at", "")
@@ -1531,6 +1533,35 @@ def render_crypto_analysis() -> None:
     render_bitcoin_dashboard(dashboard)
 
 
+def set_buffett_section(scope: str, section: str) -> None:
+    st.session_state[f"{scope}_active_buffett_section"] = section
+
+
+def render_buffett_section_navigation(scope: str) -> str:
+    sections = ["Analyza", "Hromadna analyza", "Jak funguje Buffett Score"]
+    state_key = f"{scope}_active_buffett_section"
+    current_section = st.session_state.get(state_key, sections[0])
+    if current_section not in sections:
+        current_section = sections[0]
+        st.session_state[state_key] = current_section
+
+    columns = st.columns([1, 1, 1.35])
+    for column, section in zip(columns, sections):
+        with column:
+            if st.button(
+                section,
+                use_container_width=True,
+                type="primary" if section == current_section else "secondary",
+                key=f"{scope}_section_{section}",
+                on_click=set_buffett_section,
+                args=(scope, section),
+            ):
+                current_section = section
+
+    st.caption(f"Aktivni sekce: {current_section}")
+    return current_section
+
+
 def render_buffett_workspace(
     companies,
     scope: str,
@@ -1566,6 +1597,8 @@ def render_buffett_workspace(
             type="primary",
             use_container_width=True,
             key=f"{scope}_analyze_button",
+            on_click=set_buffett_section,
+            args=(scope, "Analyza"),
         )
     with control4:
         st.markdown("**Akce**")
@@ -1573,18 +1606,23 @@ def render_buffett_workspace(
             "Hromadna analyza",
             use_container_width=True,
             key=f"{scope}_batch_button",
+            on_click=set_buffett_section,
+            args=(scope, "Hromadna analyza"),
         )
+
+    if analyze_clicked:
+        st.session_state[f"{scope}_active_buffett_section"] = "Analyza"
+    if analyze_all_clicked:
+        st.session_state[f"{scope}_active_buffett_section"] = "Hromadna analyza"
 
     st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
     selected_ticker = manual_ticker or company_options.get(selected_label, "")
-    main_tab, batch_tab, score_tab = st.tabs(
-        ["Analyza", "Hromadna analyza", "Jak funguje Buffett Score"]
-    )
+    selected_section = render_buffett_section_navigation(scope)
 
     analysis_key = f"{scope}_single_analysis"
     ticker_key = f"{scope}_single_ticker"
 
-    with main_tab:
+    if selected_section == "Analyza":
         if analyze_clicked:
             if not selected_ticker:
                 st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
@@ -1599,7 +1637,7 @@ def render_buffett_workspace(
         else:
             render_single_analysis(st.session_state[analysis_key])
 
-    with batch_tab:
+    if selected_section == "Hromadna analyza":
         if analyze_all_clicked:
             if not companies:
                 st.warning(f"Seznam firem je prazdny. Nejprve dopln `{empty_list_file}`.")
@@ -1612,7 +1650,7 @@ def render_buffett_workspace(
 
         render_batch_analysis(scope)
 
-    with score_tab:
+    if selected_section == "Jak funguje Buffett Score":
         render_score_explanation()
 
 
