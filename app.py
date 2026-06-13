@@ -12,6 +12,7 @@ import streamlit as st
 from analyzer import analyze_company
 from company_loader import load_companies
 from crypto_provider import fetch_crypto_dashboard
+from czech_macro_provider import CZECH_SERIES_DEFINITIONS, fetch_czech_macro_dashboard
 from data_provider import load_company_snapshot
 from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 
@@ -19,6 +20,9 @@ from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_whales_v2"
 FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
     definition.series_id for definition in FRED_SERIES_DEFINITIONS
+)
+CZECH_MACRO_DATA_SOURCE_VERSION = "czech_macro_v1_" + "_".join(
+    definition.key for definition in CZECH_SERIES_DEFINITIONS
 )
 
 
@@ -114,6 +118,7 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("macro_last_completed_at", "")
     st.session_state.setdefault("crisis_last_completed_at", "")
     st.session_state.setdefault("crypto_last_completed_at", "")
+    st.session_state.setdefault("czech_macro_last_completed_at", "")
 
 
 @st.cache_resource
@@ -144,6 +149,22 @@ def get_macro_state() -> dict:
         "total": 0,
         "started_at": "",
         "source_version": FRED_DATA_SOURCE_VERSION,
+    }
+
+
+@st.cache_resource
+def get_czech_macro_state() -> dict:
+    return {
+        "lock": Lock(),
+        "running": False,
+        "results": [],
+        "errors": [],
+        "status": "",
+        "updated_at": "",
+        "done": 0,
+        "total": 0,
+        "started_at": "",
+        "source_version": CZECH_MACRO_DATA_SOURCE_VERSION,
     }
 
 
@@ -1148,6 +1169,253 @@ def render_crisis_analysis() -> None:
     render_crisis_sections(state["results"], running=False)
 
 
+def start_czech_macro_analysis() -> bool:
+    state = get_czech_macro_state()
+    with state["lock"]:
+        if state["running"]:
+            return False
+        state["running"] = True
+        state["results"] = []
+        state["errors"] = []
+        state["status"] = "Nacitam ceska makro data..."
+        state["updated_at"] = ""
+        state["done"] = 0
+        state["total"] = len(CZECH_SERIES_DEFINITIONS)
+        state["started_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M:%S")
+        state["source_version"] = CZECH_MACRO_DATA_SOURCE_VERSION
+
+    def worker() -> None:
+        def on_progress(results, errors, done, total) -> None:
+            with state["lock"]:
+                state["results"] = results
+                state["errors"] = errors
+                state["done"] = done
+                state["total"] = total
+                state["status"] = f"Nacteno {done}/{total} ceskych ukazatelu..."
+
+        try:
+            results, errors = fetch_czech_macro_dashboard(progress_callback=on_progress)
+            with state["lock"]:
+                state["results"] = results
+                state["errors"] = errors
+                state["running"] = False
+                state["done"] = len(CZECH_SERIES_DEFINITIONS)
+                state["total"] = len(CZECH_SERIES_DEFINITIONS)
+                state["status"] = "Ceska makro data nactena."
+                state["updated_at"] = pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")
+        except Exception as exc:
+            with state["lock"]:
+                state["running"] = False
+                state["errors"] = [str(exc)]
+                state["status"] = "Ceska makro data se nepodarilo nacist."
+
+    Thread(target=worker, daemon=True).start()
+    return True
+
+
+def read_czech_macro_state() -> dict:
+    state = get_czech_macro_state()
+    with state["lock"]:
+        if state.get("source_version") != CZECH_MACRO_DATA_SOURCE_VERSION:
+            state["running"] = False
+            state["results"] = []
+            state["errors"] = []
+            state["status"] = ""
+            state["updated_at"] = ""
+            state["done"] = 0
+            state["total"] = 0
+            state["started_at"] = ""
+            state["source_version"] = CZECH_MACRO_DATA_SOURCE_VERSION
+
+        return {
+            "running": state["running"],
+            "results": list(state["results"]),
+            "errors": list(state["errors"]),
+            "status": state["status"],
+            "updated_at": state["updated_at"],
+            "done": state["done"],
+            "total": state["total"],
+            "started_at": state["started_at"],
+            "source_version": state["source_version"],
+        }
+
+
+def czech_period_days(label: str) -> int | None:
+    return {
+        "1 rok": 365,
+        "3 roky": 365 * 3,
+        "5 let": 365 * 5,
+        "10 let": 365 * 10,
+        "Maximum": None,
+    }.get(label)
+
+
+def filter_czech_frame_by_period(frame: pd.DataFrame, period_label: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    days = czech_period_days(period_label)
+    if days is None:
+        return frame
+    cutoff = frame.index.max() - pd.Timedelta(days=days)
+    filtered = frame[frame.index >= cutoff]
+    return filtered if not filtered.empty else frame
+
+
+def format_czech_macro_value(value: float | None, unit: str) -> str:
+    if value is None:
+        return "N/A"
+    if unit == "%":
+        return f"{value:.2f} %"
+    if unit == "CZK":
+        return f"{value:.2f} CZK"
+    return f"{value:.2f}"
+
+
+def render_czech_header() -> None:
+    st.subheader("ČR - makroekonomicky prehled")
+    st.write(
+        "Tato zalozka sleduje inflaci, sazby, kurz koruny, HDP, nezamestnanost, mzdy, prumysl, maloobchod a stavebnictvi. "
+        "Cilem je videt, jestli se v Cesku blizi inflacni tlak, zpomaleni ekonomiky nebo jina makro pohroma."
+    )
+    st.caption(
+        "Zdroje dat: ČSÚ DataStat, ČNB a Eurostat. Ukazatele jsou informativni analyticky prehled, ne investicni doporuceni."
+    )
+
+
+def render_czech_toolbar(state: dict) -> tuple[dict, str]:
+    column1, column2, column3 = st.columns([1.1, 1, 2.4])
+    with column1:
+        period_label = st.selectbox(
+            "Obdobi grafu",
+            ["1 rok", "3 roky", "5 let", "10 let", "Maximum"],
+            index=2,
+            key="czech_macro_period",
+        )
+    with column2:
+        if st.button("Obnovit data ČR", use_container_width=True):
+            start_czech_macro_analysis()
+            state = read_czech_macro_state()
+    with column3:
+        if state["updated_at"]:
+            st.caption(f"Posledni uspesne nacteni: {state['updated_at']}")
+        elif state["started_at"]:
+            st.caption(f"Spusteno: {state['started_at']}")
+    return state, period_label
+
+
+def render_czech_series_card(series_result, period_label: str) -> None:
+    definition = series_result.definition
+    frame = filter_czech_frame_by_period(series_result.observations, period_label)
+    latest_date = (
+        series_result.latest_date.strftime("%d.%m.%Y")
+        if series_result.latest_date is not None
+        else "N/A"
+    )
+
+    st.markdown(f"### {definition.title}")
+    metric_columns = st.columns(min(3, len(series_result.observations.columns)) or 1)
+    for column_container, column_name in zip(metric_columns, series_result.observations.columns[:3]):
+        series = series_result.observations[column_name].dropna()
+        latest_value = float(series.iloc[-1]) if not series.empty else None
+        column_container.metric(column_name, format_czech_macro_value(latest_value, definition.unit))
+
+    st.caption(f"Datum posledni hodnoty: {latest_date}")
+    if not frame.empty:
+        st.line_chart(frame, use_container_width=True, height=270)
+    else:
+        st.info("Pro vybrane obdobi nejsou dostupna data.")
+
+    st.write(definition.description)
+    st.write(definition.interpretation)
+    st.caption(
+        f"Zdroj: [{definition.source}]({definition.source_url}) | Jednotky: {definition.unit}"
+    )
+
+
+def render_czech_sections(results, period_label: str, running: bool = False) -> None:
+    categories = ["Inflace", "Sazby a měna", "Reálná ekonomika", "Trh práce a mzdy"]
+    result_map = {item.definition.key: item for item in results}
+    st.caption(f"Dostupne ukazatele: {len(result_map)}/{len(CZECH_SERIES_DEFINITIONS)}")
+
+    for category in categories:
+        st.markdown("---")
+        st.subheader(category)
+        definitions = [item for item in CZECH_SERIES_DEFINITIONS if item.category == category]
+        for index in range(0, len(definitions), 2):
+            columns = st.columns(2)
+            for column, definition in zip(columns, definitions[index : index + 2]):
+                with column:
+                    result = result_map.get(definition.key)
+                    if result is None:
+                        st.markdown(f"### {definition.title}")
+                        if running:
+                            st.info("Tento ukazatel se jeste nacita. Graf se doplni automaticky, jakmile prijde odpoved.")
+                        else:
+                            st.warning("Tento ukazatel se nepodarilo nacist nebo zatim nema dostupna data.")
+                        st.write(definition.description)
+                        st.caption(f"Zdroj: [{definition.source}]({definition.source_url})")
+                        continue
+                    render_czech_series_card(result, period_label)
+
+
+@st.fragment(run_every=1)
+def render_czech_loading_view() -> None:
+    state = read_czech_macro_state()
+    state, period_label = render_czech_toolbar(state)
+
+    if state["running"]:
+        total = max(state["total"], 1)
+        st.progress(state["done"] / total, text=state["status"])
+        st.info("Ceska makro data se nacitaji na pozadi. Hotove grafy se budou postupne doplnovat.")
+        for error in state["errors"]:
+            st.warning(error)
+        if state["results"]:
+            render_czech_sections(state["results"], period_label, running=True)
+        return
+
+    if (
+        state["updated_at"]
+        and st.session_state.czech_macro_last_completed_at != state["updated_at"]
+    ):
+        st.session_state.czech_macro_last_completed_at = state["updated_at"]
+        st.rerun()
+
+    for error in state["errors"]:
+        st.warning(error)
+    if state["results"]:
+        render_czech_sections(state["results"], period_label, running=False)
+
+
+def render_czech_republic_analysis() -> None:
+    render_czech_header()
+    state = read_czech_macro_state()
+
+    if not state["running"] and not state["results"] and not state["errors"]:
+        start_czech_macro_analysis()
+        st.session_state.czech_macro_last_completed_at = ""
+        state = read_czech_macro_state()
+
+    if state["running"]:
+        render_czech_loading_view()
+        return
+
+    state, period_label = render_czech_toolbar(state)
+
+    if state["errors"] and not state["results"]:
+        for error in state["errors"]:
+            st.warning(error)
+        return
+
+    for error in state["errors"]:
+        st.warning(error)
+
+    if not state["results"]:
+        st.warning("Nepodarilo se nacist zadna ceska makro data.")
+        return
+
+    render_czech_sections(state["results"], period_label, running=False)
+
+
 def start_crypto_analysis(days: int | str = 365) -> bool:
     state = get_crypto_state()
     with state["lock"]:
@@ -1662,8 +1930,8 @@ def main() -> None:
 
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     cz_companies = load_companies(Path(__file__).with_name("companies_cz.txt"))
-    buffett_tab, buffet_cz_tab, macro_tab, crypto_tab, crisis_tab = st.tabs(
-        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin", "Krize"]
+    buffett_tab, buffet_cz_tab, macro_tab, crypto_tab, crisis_tab, czech_tab = st.tabs(
+        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin", "Krize", "ČR"]
     )
 
     with buffett_tab:
@@ -1680,6 +1948,9 @@ def main() -> None:
 
     with crisis_tab:
         render_crisis_analysis()
+
+    with czech_tab:
+        render_czech_republic_analysis()
 
 
 if __name__ == "__main__":
