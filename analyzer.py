@@ -52,7 +52,7 @@ def analyze_company(snapshot: CompanySnapshot) -> AnalysisResult:
             label="Owner Earnings",
             value=owner_earnings,
             unit="currency",
-            description="Aproximace owner earnings pomocí Free Cash Flow z Yahoo Finance.",
+            description="Aproximace owner earnings pomocí dostupného Free Cash Flow z účetních dat.",
             warning=_warning_for_value(owner_earnings, "Owner Earnings"),
         ),
         MetricResult(
@@ -128,14 +128,14 @@ def analyze_company(snapshot: CompanySnapshot) -> AnalysisResult:
             label="Revenue Growth",
             value=snapshot.revenue_growth,
             unit="percent",
-            description="Meziroční růst tržeb podle Yahoo Finance.",
+            description="Meziroční růst tržeb z posledních dostupných ročních dat.",
             warning=_warning_for_value(snapshot.revenue_growth, "Revenue Growth"),
         ),
         MetricResult(
             label="Earnings Growth",
             value=snapshot.earnings_growth,
             unit="percent",
-            description="Meziroční růst zisku podle Yahoo Finance.",
+            description="Meziroční růst zisku z posledních dostupných ročních dat.",
             warning=_warning_for_value(snapshot.earnings_growth, "Earnings Growth"),
         ),
         MetricResult(
@@ -162,21 +162,22 @@ def analyze_company(snapshot: CompanySnapshot) -> AnalysisResult:
             label="Total Revenue",
             value=snapshot.total_revenue,
             unit="currency",
-            description="Celkové tržby z posledního dostupného výkazu.",
+            description="Celkové tržby z posledního dostupného ročního výkazu.",
             warning=_warning_for_value(snapshot.total_revenue, "Total Revenue"),
         ),
         MetricResult(
             label="Net Income",
             value=snapshot.net_income,
             unit="currency",
-            description="Čistý zisk z posledního dostupného výkazu.",
+            description="Čistý zisk z posledního dostupného ročního výkazu.",
             warning=_warning_for_value(snapshot.net_income, "Net Income"),
         ),
     ]
 
     score, max_score, verdict = score_company(snapshot)
     summary = (
-        "Analýza používá pouze data dostupná z Yahoo Finance přes knihovnu yfinance. "
+        "Cena a základní tržní metriky pochází z Yahoo Finance. "
+        "U amerických firem se účetní výkazy načítají z oficiálního SEC EDGAR API, pokud jsou dostupné. "
         "Vnitřní hodnota je odhad pomocí owner earnings DCF, ne přesná Buffettova kalkulačka."
     )
 

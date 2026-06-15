@@ -24,6 +24,7 @@ FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
 CZECH_MACRO_DATA_SOURCE_VERSION = "czech_macro_v1_" + "_".join(
     definition.key for definition in CZECH_SERIES_DEFINITIONS
 )
+APP_VERSION = "1.2.1"
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -45,6 +46,12 @@ st.markdown(
     .compact-note {
         font-size: 0.88rem;
         color: #4b5563;
+    }
+    .app-version {
+        font-size: 0.78rem;
+        color: #6b7280;
+        letter-spacing: 0.03em;
+        margin-bottom: 0.15rem;
     }
     </style>
     """,
@@ -328,7 +335,7 @@ def start_batch_analysis(companies, scope: str = "us") -> bool:
                     state["status"] = f"Analyzuji {company.ticker}..."
 
                 try:
-                    snapshot = load_company_snapshot(company.ticker)
+                    snapshot = load_company_snapshot(company.ticker, use_sec_statements=(scope == "us"))
                     analysis = analyze_company(snapshot)
                     row = build_batch_row(analysis)
                 except Exception as exc:
@@ -357,7 +364,7 @@ def render_score_explanation() -> None:
     st.write(
         "Buffett Score v teto aplikaci neni oficialni Buffettuv ukazatel. "
         "Je to prakticky kontrolni seznam, ktery prevadi Buffettovy principy "
-        "do nekolika srozumitelnych bodu nad daty z Yahoo Finance."
+        "do nekolika srozumitelnych bodu nad dostupnymi trznimi a ucetnimi daty."
     )
 
     st.markdown(
@@ -394,7 +401,7 @@ def render_score_explanation() -> None:
     st.subheader("Jak pocitam vnitrni hodnotu")
     st.write(
         "Vnitrni hodnota se v aplikaci pocita metodou owner earnings DCF, kde jako zaklad pouzivam "
-        "aktualni `Free Cash Flow` z Yahoo Finance. Nejde o presnou predpoved budoucnosti, ale o "
+        "aktualni `Free Cash Flow` z dostupnych ucetnich vykazu. Nejde o presnou predpoved budoucnosti, ale o "
         "konzervativni odhad zalozeny na dnes dostupnych datech."
     )
     st.markdown(
@@ -476,6 +483,8 @@ def render_single_analysis(analysis, scope: str) -> None:
         "Nejde o investicni doporuceni a pri chybejicich datech se zobrazi N/A.</p>",
         unsafe_allow_html=True,
     )
+    if company.source_notes:
+        st.caption(" | ".join(company.source_notes))
 
     if analysis.warnings:
         with st.expander(f"Varovani a chybejici data ({len(analysis.warnings)})", expanded=False):
@@ -1918,7 +1927,10 @@ def render_buffett_workspace(
     if analyze_all_clicked:
         st.session_state[f"{scope}_active_buffett_section"] = "Hromadna analyza"
 
-    st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
+    if scope == "us":
+        st.caption("Zdroj dat: cena a zakladni trzni metriky z Yahoo Finance, ucetni vykazy americkych firem z SEC EDGAR API.")
+    else:
+        st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
     selected_ticker = manual_ticker or company_options.get(selected_label, "")
     selected_section = render_buffett_section_navigation(scope)
 
@@ -1931,7 +1943,7 @@ def render_buffett_workspace(
                 st.warning("Vyber ticker ze seznamu nebo ho zadej rucne.")
             else:
                 with st.spinner(f"Nacitam data pro {selected_ticker}..."):
-                    snapshot = load_company_snapshot(selected_ticker)
+                    snapshot = load_company_snapshot(selected_ticker, use_sec_statements=(scope == "us"))
                     st.session_state[analysis_key] = analyze_company(snapshot)
                     st.session_state[ticker_key] = selected_ticker
 
@@ -1958,7 +1970,15 @@ def render_buffett_workspace(
 
 
 def main() -> None:
-    st.title("Buffett Analyzer")
+    st.markdown(
+        (
+            "<div style='padding-top:1.1rem; display:flex; align-items:center; gap:0.75rem; margin:0 0 0.5rem 0;'>"
+            "<h1 style='margin:0; padding:0; line-height:1.1;'>Buffett Analyzer</h1>"
+            f"<span style='font-size:0.86rem; color:#6b7280; margin-top:0.2rem;'>v{APP_VERSION}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
     ensure_session_state()
     ensure_macro_preload_started()
     ensure_crypto_preload_started()
