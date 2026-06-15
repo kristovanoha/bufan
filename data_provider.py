@@ -46,6 +46,33 @@ def _append_warning_if_missing(warnings: list[str], value: Any, label: str) -> N
         warnings.append(f"{label} není v datech Yahoo Finance dostupné.")
 
 
+def load_price_history(ticker_symbol: str, period: str = "5y") -> tuple[pd.DataFrame, list[str]]:
+    ticker = yf.Ticker(ticker_symbol.upper())
+    warnings: list[str] = []
+
+    try:
+        history = ticker.history(period=period, auto_adjust=False)
+    except Exception as exc:
+        return pd.DataFrame(), [f"NepodaĹ™ilo se naÄŤĂ­st cenovou historii pro {ticker_symbol.upper()}: {exc}"]
+
+    if history.empty:
+        warnings.append(
+            f"CenovĂˇ historie pro {ticker_symbol.upper()} za obdobĂ­ {period} nenĂ­ v Yahoo Finance dostupnĂˇ."
+        )
+        return pd.DataFrame(), warnings
+
+    if "Close" not in history.columns:
+        warnings.append(
+            f"Yahoo Finance nevrĂˇtil sloupec Close pro {ticker_symbol.upper()} za obdobĂ­ {period}."
+        )
+        return pd.DataFrame(), warnings
+
+    close_history = history[["Close"]].copy()
+    close_history.index = pd.to_datetime(close_history.index)
+    close_history.rename(columns={"Close": "Close Price"}, inplace=True)
+    return close_history, warnings
+
+
 def load_company_snapshot(ticker_symbol: str) -> CompanySnapshot:
     ticker = yf.Ticker(ticker_symbol.upper())
     warnings: list[str] = []

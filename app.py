@@ -13,7 +13,7 @@ from analyzer import analyze_company
 from company_loader import load_companies
 from crypto_provider import fetch_crypto_dashboard
 from czech_macro_provider import CZECH_SERIES_DEFINITIONS, fetch_czech_macro_dashboard
-from data_provider import load_company_snapshot
+from data_provider import load_company_snapshot, load_price_history
 from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 
 
@@ -442,7 +442,12 @@ def render_score_explanation() -> None:
     )
 
 
-def render_single_analysis(analysis) -> None:
+@st.cache_data(show_spinner=False)
+def get_price_history_chart_data(ticker: str, period: str) -> tuple[pd.DataFrame, list[str]]:
+    return load_price_history(ticker, period)
+
+
+def render_single_analysis(analysis, scope: str) -> None:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
     intrinsic_value = getattr(company, "intrinsic_value_per_share", None)
@@ -480,6 +485,36 @@ def render_single_analysis(analysis) -> None:
     overview_tab, metrics_tab = st.tabs(["Prehled", "Metriky"])
 
     with overview_tab:
+        period_options = {
+            "1 rok": "1y",
+            "3 roky": "3y",
+            "5 let": "5y",
+            "10 let": "10y",
+            "Max": "max",
+        }
+        chart_col, control_col = st.columns([3.3, 1.2])
+        with control_col:
+            selected_period_label = st.selectbox(
+                "Obdobi grafu",
+                options=list(period_options.keys()),
+                index=2,
+                key=f"{scope}_price_history_period",
+                help="Meni historicke obdobi cenoveho grafu v zalozce Prehled.",
+            )
+        selected_period = period_options[selected_period_label]
+        price_history, history_warnings = get_price_history_chart_data(company.ticker, selected_period)
+        with chart_col:
+            st.markdown("**Vyvoj ceny akcie**")
+            if price_history.empty:
+                st.warning("Cenovy graf neni pro zvolene obdobi dostupny.")
+            else:
+                st.line_chart(price_history, y="Close Price", use_container_width=True, height=320)
+                st.caption(
+                    f"Zdroj: Yahoo Finance pres yfinance. Zobrazen je sloupec Close pro ticker {company.ticker}."
+                )
+        for warning in history_warnings:
+            st.warning(warning)
+
         a1, a2, a3, a4 = st.columns(4)
         metric_map = {metric.label: metric for metric in analysis.metrics}
         a1.metric("ROE", format_value(metric_map["ROE"].value, "percent", company.currency))
@@ -1903,7 +1938,7 @@ def render_buffett_workspace(
         if st.session_state[analysis_key] is None:
             st.info("Zatim tu neni analyza konkretni firmy. Vyber ticker vyse a klikni na `Analyzovat`.")
         else:
-            render_single_analysis(st.session_state[analysis_key])
+            render_single_analysis(st.session_state[analysis_key], scope)
 
     if selected_section == "Hromadna analyza":
         if analyze_all_clicked:
