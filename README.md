@@ -1,21 +1,22 @@
 # Buffett Analyzer
 
-Buffett Analyzer je jednoduchá Streamlit aplikace pro osobní fundamentální analýzu amerických akcií podle principů Warrena Buffetta.
+Buffett Analyzer je jednoducha Streamlit aplikace pro osobni fundamentalni analyzu americkych akcii podle principu Warrena Buffetta.
 
 ## Vlastnosti
 
-- Tržní cenu a základní tržní metriky načítá z Yahoo Finance přes `yfinance`
-- Účetní výkazy amerických firem načítá z oficiálního SEC EDGAR API
-- Nic nevymýšlí: chybějící hodnoty zobrazuje jako `N/A`
-- Zobrazuje varování při neúplných nebo nedostupných datech
-- Ukazuje Buffett-style skóre na základě kvality firmy, cash flow, zadlužení a ceny
-- Počítá orientační vnitřní hodnotu pomocí owner earnings DCF
+- Trzni cenu a zakladni trzni metriky nacita z Yahoo Finance pres `yfinance`
+- Ucetni vykazy americkych firem nacita z oficialniho SEC EDGAR API
+- Insider transakce aktualniho vedeni za 5 let zobrazuje z oficialnich SEC Form 4 a 5
+- Nic nevymysli: chybejici hodnoty zobrazuje jako `N/A`
+- Zobrazuje varovani pri neuplnych nebo nedostupnych datech
+- Ukazuje Buffett-style skore na zaklade kvality firmy, cash flow, zadluzeni a ceny
+- Pocita orientacni vnitrni hodnotu pomoci owner earnings DCF
 
 ## Verze aplikace
 
-- Aktuální verze aplikace je zapsaná v `app.py` v konstantě `APP_VERSION`.
-- Aktuálně nasazená verze v tomto repozitáři: `1.2.1`
-- Při každé změně aplikace je povinné číslo verze zvýšit, aby bylo v UI jasně vidět, co je nasazené.
+- Aktualni verze aplikace je zapsana v `app.py` v konstante `APP_VERSION`.
+- Aktualne nasazena verze v tomto repozitari: `1.4.3`
+- Pri kazde zmene aplikace je povinne cislo verze zvysit, aby bylo v UI jasne videt, co je nasazene.
 
 ## Struktura projektu
 
@@ -25,6 +26,7 @@ analyzer.py
 company_loader.py
 data_provider.py
 sec_edgar_provider.py
+sec_insider_provider.py
 scoring.py
 models.py
 companies.txt
@@ -42,7 +44,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## Spuštění
+## Spusteni
 
 ```bash
 python -m streamlit run app.py
@@ -50,14 +52,15 @@ python -m streamlit run app.py
 
 ## Zdroje dat
 
-- Yahoo Finance přes `yfinance`: cena akcie, market cap, trailing P/E, dividendový výnos a další rychlé tržní metriky
-- SEC EDGAR API: oficiální účetní výkazy amerických firem pro revenue, net income, cash, debt, equity, operating cash flow a další odvozené poměry
+- Yahoo Finance pres `yfinance`: cena akcie, market cap, trailing P/E, dividendovy vynos a dalsi rychle trzni metriky
+- SEC EDGAR API: oficialni ucetni vykazy americkych firem pro revenue, net income, cash, debt, equity, operating cash flow a dalsi odvozene pomery
+- SEC Form 3/4/5: insider transakce vedeni, reditelu a 10% vlastniku
 
-## Poznámky
+## Poznamky
 
-- Pokud Yahoo Finance nebo SEC některé pole neposkytnou, aplikace zobrazí `N/A`.
-- Vnitřní hodnota je odhad, ne přesná hodnota. Model používá Free Cash Flow jako dostupnou aproximaci owner earnings.
-- Nákupní cena je vnitřní hodnota snížená o 25% margin of safety.
-- Výstup je určen pro osobní analýzu, nejde o investiční doporučení.
-- Volitelně můžeš do `config.json` nebo do proměnné prostředí `SEC_USER_AGENT` doplnit vlastní User-Agent pro SEC požadavky.
-- Hlavní specifikace projektu je v `docs/BUFFETT_ANALYZER_SPEC.md`.
+- Pokud Yahoo Finance nebo SEC nektere pole neposkytnou, aplikace zobrazi `N/A`.
+- Vnitrni hodnota je odhad, ne presna hodnota. Model pouziva Free Cash Flow jako dostupnou aproximaci owner earnings.
+- Nakupni cena je vnitrni hodnota snizena o 25% margin of safety.
+- Vystup je urcen pro osobni analyzu, nejde o investicni doporuceni.
+- Volitelne muzes do `config.json` nebo do promenne prostredi `SEC_USER_AGENT` doplnit vlastni User-Agent pro SEC pozadavky.
+- Hlavni specifikace projektu je v `docs/BUFFETT_ANALYZER_SPEC.md`.

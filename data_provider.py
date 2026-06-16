@@ -90,9 +90,11 @@ def load_company_snapshot(ticker_symbol: str, use_sec_statements: bool = False) 
     ticker = yf.Ticker(ticker_symbol.upper())
     warnings: list[str] = []
     notes: list[str] = ["Zdroj dat: Yahoo Finance pres yfinance."]
+    raw_info: dict[str, Any] = {}
 
     try:
         info = ticker.get_info()
+        raw_info.update(info)
     except Exception as exc:
         info = {}
         warnings.append(f"Nepodařilo se načíst profil firmy: {exc}")
@@ -145,6 +147,8 @@ def load_company_snapshot(ticker_symbol: str, use_sec_statements: bool = False) 
         warnings.extend(sec_data.warnings)
         if sec_data.source_notes:
             notes = sec_data.source_notes
+        if sec_data.cik:
+            raw_info["sec_cik"] = sec_data.cik
         if not company_name or company_name == ticker_symbol.upper():
             company_name = sec_data.entity_name or company_name
 
@@ -264,5 +268,5 @@ def load_company_snapshot(ticker_symbol: str, use_sec_statements: bool = False) 
         cash_and_equivalents=cash_and_equivalents,
         source_notes=notes,
         warnings=list(dict.fromkeys(warnings)),
-        raw_info=info,
+        raw_info=raw_info,
     )

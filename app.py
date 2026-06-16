@@ -15,6 +15,7 @@ from crypto_provider import fetch_crypto_dashboard
 from czech_macro_provider import CZECH_SERIES_DEFINITIONS, fetch_czech_macro_dashboard
 from data_provider import load_company_snapshot, load_price_history
 from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
+from sec_insider_provider import load_insider_transactions
 
 
 CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_whales_v2"
@@ -24,7 +25,7 @@ FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
 CZECH_MACRO_DATA_SOURCE_VERSION = "czech_macro_v1_" + "_".join(
     definition.key for definition in CZECH_SERIES_DEFINITIONS
 )
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.4.3"
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -94,6 +95,60 @@ def metrics_dataframe(metrics, currency: str | None) -> pd.DataFrame:
             for metric in metrics
         ]
     )
+
+
+def insider_transactions_dataframe(frame: pd.DataFrame, currency: str | None) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    def format_insider_price(value: float | None) -> str:
+        if value is None or pd.isna(value):
+            return "N/A"
+        suffix = f" {currency}" if currency else ""
+        return f"{value:,.2f}{suffix}"
+
+    display_frame = frame.copy()
+    display_frame["Datum transakce"] = display_frame["transaction_date"].dt.strftime("%d.%m.%Y")
+    display_frame["Datum podani"] = display_frame["filing_date"].dt.strftime("%d.%m.%Y")
+    display_frame["Vykazujici osoba"] = display_frame["reporting_owner"]
+    display_frame["Vztah"] = display_frame["relationship"]
+    display_frame["Typ pohybu"] = display_frame["transaction_kind"]
+    display_frame["Kod"] = display_frame["transaction_code"]
+    display_frame["Kod detail"] = display_frame["transaction_code_description"]
+    display_frame["Akcii"] = display_frame["shares"].map(lambda value: f"{value:,.0f}")
+    display_frame["Cena za akcii"] = display_frame["price_per_share"].map(format_insider_price)
+    display_frame["Po transakci"] = display_frame["shares_following"].map(
+        lambda value: "N/A" if value is None or pd.isna(value) else f"{value:,.0f}"
+    )
+    display_frame["Form"] = display_frame["form_type"]
+    display_frame["10b5-1"] = display_frame["aff_10b5_one"].map(lambda value: "Ano" if value else "Ne")
+    return display_frame[
+        [
+            "Datum transakce",
+            "Datum podani",
+            "Vykazujici osoba",
+            "Vztah",
+            "Typ pohybu",
+            "Kod",
+            "Kod detail",
+            "Akcii",
+            "Cena za akcii",
+            "Po transakci",
+            "Form",
+            "10b5-1",
+        ]
+    ]
+
+
+def classify_insider_group(relationship: str) -> str:
+    relationship_text = str(relationship or "")
+    if "Officer" in relationship_text or "Director" in relationship_text:
+        return "Aktualni vedeni"
+    if "10% Owner" in relationship_text:
+        return "10% vlastnik"
+    if relationship_text.strip() and relationship_text.strip() != "Neuvedeno":
+        return "Jina hlasici osoba"
+    return "Neuvedeno"
 
 
 def metric_caption(title: str, body: str) -> None:
@@ -454,6 +509,239 @@ def get_price_history_chart_data(ticker: str, period: str) -> tuple[pd.DataFrame
     return load_price_history(ticker, period)
 
 
+@st.cache_data(show_spinner="Nacitam insider transakce ze SEC...")
+def get_insider_transactions_data(
+    ticker: str,
+    years: int = 5,
+    cik: str | None = None,
+    management_only: bool = True,
+) -> tuple[pd.DataFrame, list[str]]:
+    return load_insider_transactions(ticker, years, cik_override=cik, management_only=management_only)
+
+
+@st.cache_resource
+def get_insider_state() -> dict:
+    return {
+        "lock": Lock(),
+        "records": {},
+    }
+
+
+def insider_state_key(ticker: str, years: int, cik: str | None, management_only: bool) -> str:
+    return f"{ticker.upper()}::{years}::{(cik or '').strip()}::{management_only}"
+
+
+def read_insider_state(ticker: str, years: int, cik: str | None, management_only: bool) -> dict:
+    state = get_insider_state()
+    record_key = insider_state_key(ticker, years, cik, management_only)
+    with state["lock"]:
+        record = state["records"].get(
+            record_key,
+            {
+                "running": False,
+                "frame": None,
+                "warnings": [],
+                "error": None,
+                "updated_at": "",
+            },
+        )
+        return {
+            "running": record["running"],
+            "frame": record["frame"],
+            "warnings": list(record["warnings"]),
+            "error": record["error"],
+            "updated_at": record["updated_at"],
+        }
+
+
+def start_insider_transactions_load(ticker: str, years: int, cik: str | None, management_only: bool) -> bool:
+    state = get_insider_state()
+    record_key = insider_state_key(ticker, years, cik, management_only)
+    with state["lock"]:
+        record = state["records"].get(record_key)
+        if record and record.get("running"):
+            return False
+        state["records"][record_key] = {
+            "running": True,
+            "frame": None,
+            "warnings": [],
+            "error": None,
+            "updated_at": "",
+        }
+
+    def worker() -> None:
+        try:
+            frame, warnings = load_insider_transactions(
+                ticker,
+                years,
+                cik_override=cik,
+                management_only=management_only,
+            )
+            with state["lock"]:
+                state["records"][record_key] = {
+                    "running": False,
+                    "frame": frame,
+                    "warnings": warnings,
+                    "error": None,
+                    "updated_at": pd.Timestamp.now().strftime("%d.%m.%Y %H:%M"),
+                }
+        except Exception as exc:
+            with state["lock"]:
+                state["records"][record_key] = {
+                    "running": False,
+                    "frame": pd.DataFrame(),
+                    "warnings": [],
+                    "error": str(exc),
+                    "updated_at": "",
+                }
+
+    Thread(target=worker, daemon=True).start()
+    return True
+
+
+def render_insider_transactions_tab(company, scope: str) -> None:
+    if scope != "us":
+        st.info("SEC insider transakce jsou v teto verzi dostupne jen pro americke firmy se SEC Form 3/4/5.")
+        return
+
+    st.markdown("**Nakupy a prodeje akcii vedenim a dalsimi hlasicimi osobami**")
+    st.caption(
+        "Zdroj: SEC EDGAR Form 3/4/5. Tabulka a graf pracuji s ne-derivativnimi transakcemi hlasenymi insiderem."
+    )
+    st.caption(
+        "Zobrazeni je nastaveno na poslednich 5 let a jen na aktualni vedeni, tedy osoby s roli `Officer` nebo `Director` v SEC filingach."
+    )
+    cik = company.raw_info.get("sec_cik") if isinstance(company.raw_info, dict) else None
+    state = read_insider_state(company.ticker, 5, cik, True)
+    if state["frame"] is None and not state["running"] and not state["error"]:
+        start_insider_transactions_load(company.ticker, 5, cik, True)
+        state = read_insider_state(company.ticker, 5, cik, True)
+
+    if state["running"]:
+        st.info("Nacitam insider transakce ze SEC. Tahle sekce se po dokonceni sama obnovi.")
+        time.sleep(2)
+        st.rerun()
+        return
+
+    if state["error"]:
+        st.warning(state["error"])
+        return
+
+    insider_frame = state["frame"] if isinstance(state["frame"], pd.DataFrame) else pd.DataFrame()
+    insider_warnings = state["warnings"]
+    for warning in insider_warnings:
+        st.warning(warning)
+
+    if insider_frame.empty:
+        st.info("Za poslednich 5 let nejsou pro tuto firmu dostupne insider transakce z SEC.")
+        return
+
+    if state["updated_at"]:
+        st.caption(f"Posledni nacteni insider dat: {state['updated_at']}")
+
+    filtered_frame = insider_frame.copy()
+    filtered_frame["insider_group"] = filtered_frame["relationship"].map(classify_insider_group)
+
+    filter1, filter2, filter3 = st.columns([1.15, 1.45, 1.15])
+    with filter1:
+        group_mode = st.selectbox(
+            "Typ vedeni",
+            options=[
+                "Vsechno vedeni",
+                "Jen officeri",
+                "Jen directori",
+            ],
+            key=f"{scope}_insider_group_mode_{company.ticker}",
+        )
+    with filter2:
+        owner_options = sorted(
+            owner for owner in filtered_frame["reporting_owner"].dropna().astype(str).unique().tolist() if owner
+        )
+        selected_owners = st.multiselect(
+            "Filtr podle osoby",
+            options=owner_options,
+            placeholder="Vsechny osoby",
+            key=f"{scope}_insider_owner_filter_{company.ticker}",
+        )
+    with filter3:
+        movement_options = sorted(
+            movement for movement in filtered_frame["transaction_kind"].dropna().astype(str).unique().tolist() if movement
+        )
+        selected_movements = st.multiselect(
+            "Typ pohybu",
+            options=movement_options,
+            placeholder="Vsechny pohyby",
+            key=f"{scope}_insider_movement_filter_{company.ticker}",
+        )
+
+    filtered_frame = filtered_frame[filtered_frame["insider_group"] == "Aktualni vedeni"]
+    if group_mode == "Jen officeri":
+        filtered_frame = filtered_frame[
+            filtered_frame["relationship"].fillna("").str.contains("Officer", case=False, na=False)
+        ]
+    elif group_mode == "Jen directori":
+        filtered_frame = filtered_frame[
+            filtered_frame["relationship"].fillna("").str.contains("Director", case=False, na=False)
+        ]
+
+    if selected_owners:
+        filtered_frame = filtered_frame[filtered_frame["reporting_owner"].isin(selected_owners)]
+    if selected_movements:
+        filtered_frame = filtered_frame[filtered_frame["transaction_kind"].isin(selected_movements)]
+
+    st.caption(
+        "Tohle je rychlejsi rezim: tab zobrazuje jen hlasene transakce aktualniho vedeni, ne vsech insider osob."
+    )
+
+    if filtered_frame.empty:
+        st.warning("Pro zvolene filtry nejsou dostupne zadne insider transakce vedeni.")
+        return
+
+    acquisitions = filtered_frame.loc[filtered_frame["signed_shares"] > 0, "signed_shares"].sum()
+    dispositions = filtered_frame.loc[filtered_frame["signed_shares"] < 0, "signed_shares"].abs().sum()
+    filings_count = int(filtered_frame[["filing_date", "reporting_owner"]].drop_duplicates().shape[0])
+    transactions_count = int(len(filtered_frame))
+
+    sum1, sum2, sum3, sum4 = st.columns(4)
+    sum1.metric("Hlasene transakce", f"{transactions_count:,}".replace(",", " "))
+    sum2.metric("Unikatni podani", f"{filings_count:,}".replace(",", " "))
+    sum3.metric("Nakoupene akcie", f"{acquisitions:,.0f}".replace(",", " "))
+    sum4.metric("Prodane akcie", f"{dispositions:,.0f}".replace(",", " "))
+
+    monthly_frame = filtered_frame.copy()
+    monthly_frame["Mesic"] = monthly_frame["transaction_date"].dt.to_period("M").dt.to_timestamp()
+    monthly_chart = (
+        monthly_frame.groupby("Mesic", as_index=True)
+        .agg(
+            Nakoupeno=("signed_shares", lambda values: sum(value for value in values if value > 0)),
+            Prodano=("signed_shares", lambda values: abs(sum(value for value in values if value < 0))),
+            Cisty_pohyb=("signed_shares", "sum"),
+        )
+        .sort_index()
+    )
+
+    chart_col, note_col = st.columns([3.2, 1.3])
+    with chart_col:
+        st.markdown("**Vyvoj insider aktivit za poslednich 5 let**")
+        st.bar_chart(monthly_chart[["Nakoupeno", "Prodano"]], use_container_width=True, height=320)
+    with note_col:
+        metric_caption("Nakoupeno", "Souhrn hlasenych nabyti akcii za dany mesic.")
+        metric_caption("Prodano", "Souhrn hlasenych prodeju nebo snizeni pozice za dany mesic.")
+        metric_caption("SEC Form 4/5", "Jde o hlasene insider transakce osob, ktere je museji SEC oznamovat.")
+        metric_caption("Poznamka", "Data mohou obsahovat granty, exercise a dane. Proto je dulezite cist i transaction code.")
+
+    with st.expander("Zobrazit cisty mesicni pohyb", expanded=False):
+        st.line_chart(monthly_chart[["Cisty_pohyb"]], use_container_width=True, height=220)
+        st.caption("Kladna hodnota znamena prevahu hlasenych nakupu, zaporna prevahu prodeju nebo snizeni pozice.")
+
+    st.dataframe(
+        insider_transactions_dataframe(filtered_frame, company.currency),
+        use_container_width=True,
+        hide_index=True,
+        height=620,
+    )
+
+
 def render_single_analysis(analysis, scope: str) -> None:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
@@ -491,9 +779,15 @@ def render_single_analysis(analysis, scope: str) -> None:
             for warning in analysis.warnings:
                 st.warning(warning)
 
-    overview_tab, metrics_tab = st.tabs(["Prehled", "Metriky"])
+    detail_view = st.radio(
+        "Detail firmy",
+        options=["Prehled", "Metriky", "Insider transakce"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"{scope}_single_detail_view",
+    )
 
-    with overview_tab:
+    if detail_view == "Prehled":
         period_options = {
             "1 rok": "1y",
             "3 roky": "3y",
@@ -541,13 +835,16 @@ def render_single_analysis(analysis, scope: str) -> None:
             metric_caption("Nakupni cena", "Vnitrni hodnota snizena o 25% margin of safety. Zelena v hromadne tabulce znamena, ze cena je pod touto hranici.")
         st.write(analysis.summary)
 
-    with metrics_tab:
+    if detail_view == "Metriky":
         st.dataframe(
             metrics_dataframe(analysis.metrics, company.currency),
             use_container_width=True,
             hide_index=True,
             height=620,
         )
+
+    if detail_view == "Insider transakce":
+        render_insider_transactions_tab(company, scope)
 
 
 def read_batch_state(scope: str = "us") -> dict:
