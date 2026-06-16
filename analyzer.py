@@ -177,7 +177,7 @@ def analyze_company(snapshot: CompanySnapshot) -> AnalysisResult:
     score, max_score, verdict = score_company(snapshot)
     summary = (
         "Cena a základní tržní metriky pochází z Yahoo Finance. "
-        "U amerických firem se účetní výkazy načítají z oficiálního SEC EDGAR API, pokud jsou dostupné. "
+        "Účetní data se berou primárně z Yahoo Finance a chybějící položky u amerických firem doplňuje SEC EDGAR, pokud jsou dostupné. "
         "Vnitřní hodnota je odhad pomocí owner earnings DCF, ne přesná Buffettova kalkulačka."
     )
 
