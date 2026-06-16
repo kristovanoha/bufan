@@ -520,7 +520,7 @@ def _compact_warnings(warnings: list[str], used_yahoo_fallback: bool = False) ->
     if sec_blocked:
         compacted.insert(
             0,
-            "SEC EDGAR vratil HTTP 403 pro prime insider endpointy. "
+            "SEC EDGAR momentalne odmita prime automaticke dotazy z hostingu aplikace. "
             "Aplikace proto zobrazila zalozni insider transakce z Yahoo Finance; ty mohou byt mene kompletni nez SEC Form 4/5.",
         )
 
