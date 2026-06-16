@@ -13,9 +13,38 @@ from analyzer import analyze_company
 from company_loader import load_companies
 from crypto_provider import fetch_crypto_dashboard
 from czech_macro_provider import CZECH_SERIES_DEFINITIONS, fetch_czech_macro_dashboard
-from data_provider import load_company_snapshot, load_price_history
+from data_provider import load_company_snapshot
 from fred_provider import FRED_SERIES_DEFINITIONS, fetch_macro_dashboard
 from sec_insider_provider import load_insider_transactions
+
+
+def load_price_history(ticker_symbol: str, period: str = "5y") -> tuple[pd.DataFrame, list[str]]:
+    import yfinance as yf
+
+    ticker = yf.Ticker(ticker_symbol.upper())
+    warnings: list[str] = []
+
+    try:
+        history = ticker.history(period=period, auto_adjust=False)
+    except Exception as exc:
+        return pd.DataFrame(), [f"Nepodarilo se nacist cenovou historii pro {ticker_symbol.upper()}: {exc}"]
+
+    if history.empty:
+        warnings.append(
+            f"Cenova historie pro {ticker_symbol.upper()} za obdobi {period} neni v Yahoo Finance dostupna."
+        )
+        return pd.DataFrame(), warnings
+
+    if "Close" not in history.columns:
+        warnings.append(
+            f"Yahoo Finance nevratil sloupec Close pro {ticker_symbol.upper()} za obdobi {period}."
+        )
+        return pd.DataFrame(), warnings
+
+    close_history = history[["Close"]].copy()
+    close_history.index = pd.to_datetime(close_history.index)
+    close_history.rename(columns={"Close": "Close Price"}, inplace=True)
+    return close_history, warnings
 
 
 CRYPTO_DATA_SOURCE_VERSION = "btc_history_yfinance_whales_v2"
