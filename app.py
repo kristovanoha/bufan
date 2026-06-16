@@ -54,7 +54,7 @@ FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
 CZECH_MACRO_DATA_SOURCE_VERSION = "czech_macro_v1_" + "_".join(
     definition.key for definition in CZECH_SERIES_DEFINITIONS
 )
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -96,6 +96,8 @@ def format_value(value: float | str | None, unit: str = "", currency: str | None
         return value
     if unit == "percent":
         return f"{value * 100:.2f} %"
+    if unit == "percent_points":
+        return f"{value:.2f} %"
     if unit == "currency":
         suffix = f" {currency}" if currency else ""
         return f"{value:,.0f}{suffix}"

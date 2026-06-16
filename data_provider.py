@@ -160,6 +160,8 @@ def load_company_snapshot(ticker_symbol: str, use_sec_statements: bool = False) 
         last_year_dividend_yield *= 100
     else:
         last_year_dividend_yield = _normalize_number(_safe_get(info, "dividendYield"))
+        if last_year_dividend_yield is not None:
+            last_year_dividend_yield *= 100
     five_year_avg_dividend_yield = _normalize_number(_safe_get(info, "fiveYearAvgDividendYield"))
 
     yahoo_current_ratio = _normalize_number(_safe_get(info, "currentRatio"))

@@ -49,6 +49,20 @@ def analyze_company(snapshot: CompanySnapshot) -> AnalysisResult:
             warning=_warning_for_value(snapshot.trailing_pe, "Trailing P/E"),
         ),
         MetricResult(
+            label="Dividend Yield",
+            value=snapshot.last_year_dividend_yield,
+            unit="percent_points",
+            description="Posledni dostupny dividendovy vynos podle Yahoo Finance.",
+            warning=_warning_for_value(snapshot.last_year_dividend_yield, "Dividend Yield"),
+        ),
+        MetricResult(
+            label="5Y Average Dividend Yield",
+            value=snapshot.five_year_avg_dividend_yield,
+            unit="percent_points",
+            description="Prumerny dividendovy vynos za poslednich 5 let podle Yahoo Finance.",
+            warning=_warning_for_value(snapshot.five_year_avg_dividend_yield, "5Y Average Dividend Yield"),
+        ),
+        MetricResult(
             label="Owner Earnings",
             value=owner_earnings,
             unit="currency",

@@ -15,7 +15,7 @@ Buffett Analyzer je jednoducha Streamlit aplikace pro osobni fundamentalni analy
 ## Verze aplikace
 
 - Aktualni verze aplikace je zapsana v `app.py` v konstante `APP_VERSION`.
-- Aktualne nasazena verze v tomto repozitari: `1.4.4`
+- Aktualne nasazena verze v tomto repozitari: `1.4.5`
 - Pri kazde zmene aplikace je povinne cislo verze zvysit, aby bylo v UI jasne videt, co je nasazene.
 
 ## Struktura projektu
