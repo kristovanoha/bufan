@@ -14,6 +14,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 import pandas as pd
+import yfinance as yf
 
 from sec_edgar_provider import _load_sec_user_agent, _throttle_sec_requests, load_sec_ticker_to_cik_map
 
@@ -415,6 +416,117 @@ def _load_rows_from_dataset(
     return rows, warnings, last_published_end
 
 
+def _yahoo_transaction_code(text: str) -> str:
+    normalized = text.lower()
+    if "sale" in normalized:
+        return "S"
+    if "purchase" in normalized:
+        return "P"
+    if "gift" in normalized:
+        return "G"
+    if "conversion" in normalized or "exercise" in normalized:
+        return "M"
+    if "award" in normalized or "grant" in normalized:
+        return "A"
+    return "N/A"
+
+
+def _load_rows_from_yfinance(
+    ticker_symbol: str,
+    cutoff: date,
+    management_only: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = [
+        "Primarni SEC EDGAR endpointy pro insider transakce nebyly dostupne. "
+        "Pouzivam zalozni tabulku Yahoo Finance insider_transactions, ktera muze byt mene kompletni nez SEC Form 4/5."
+    ]
+
+    try:
+        frame = yf.Ticker(ticker_symbol.upper()).get_insider_transactions()
+    except Exception as exc:
+        return [], warnings + [f"Nepodarilo se nacist zalozni insider transakce z Yahoo Finance: {exc}"]
+
+    if frame is None or frame.empty:
+        return [], warnings + ["Yahoo Finance nevratil zadne zalozni insider transakce."]
+
+    rows: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        transaction_date = pd.to_datetime(row.get("Start Date"), errors="coerce")
+        if pd.isna(transaction_date) or transaction_date.date() < cutoff:
+            continue
+
+        position = str(row.get("Position") or "Neuvedeno")
+        if management_only and not _is_management_relationship(position):
+            continue
+
+        shares = _safe_float(row.get("Shares"))
+        if shares is None:
+            continue
+
+        text = str(row.get("Text") or "")
+        transaction_code = _yahoo_transaction_code(text)
+        value = _safe_float(row.get("Value"))
+        price_per_share = value / shares if value is not None and shares else None
+
+        rows.append(
+            {
+                "filing_date": transaction_date.date().isoformat(),
+                "transaction_date": transaction_date.date().isoformat(),
+                "reporting_owner": str(row.get("Insider") or "Neuvedeno"),
+                "relationship": position,
+                "security_title": "Common Stock",
+                "transaction_code": transaction_code,
+                "transaction_code_description": _transaction_code_description(transaction_code),
+                "transaction_kind": _transaction_kind(
+                    transaction_code,
+                    "D" if transaction_code == "S" else ("A" if transaction_code in BUY_CODES else ""),
+                ),
+                "shares": shares,
+                "price_per_share": price_per_share,
+                "shares_following": None,
+                "acquired_disposed_code": "N/A",
+                "form_type": "Yahoo Finance",
+                "filing_url": str(row.get("URL") or ""),
+                "issuer_name": "",
+                "issuer_symbol": ticker_symbol.upper(),
+                "aff_10b5_one": False,
+            }
+        )
+
+    return rows, warnings
+
+
+def _compact_warnings(warnings: list[str], used_yahoo_fallback: bool = False) -> list[str]:
+    if not used_yahoo_fallback:
+        return list(dict.fromkeys(warnings))
+
+    compacted: list[str] = []
+    sec_blocked = False
+    for warning in warnings:
+        if "HTTP Error 403: Forbidden" in warning and (
+            "SEC insider dataset" in warning
+            or "SEC mapovani tickeru" in warning
+            or "SEC mapování tickeru" in warning
+        ):
+            sec_blocked = True
+            continue
+        if warning.startswith("Primarni SEC EDGAR endpointy pro insider transakce nebyly dostupne."):
+            sec_blocked = True
+            continue
+        if "Ticker " in warning and "SEC mapovani ticker/CIK" in warning:
+            continue
+        compacted.append(warning)
+
+    if sec_blocked:
+        compacted.insert(
+            0,
+            "SEC EDGAR vratil HTTP 403 pro prime insider endpointy. "
+            "Aplikace proto zobrazila zalozni insider transakce z Yahoo Finance; ty mohou byt mene kompletni nez SEC Form 4/5.",
+        )
+
+    return list(dict.fromkeys(compacted))
+
+
 def load_insider_transactions(
     ticker_symbol: str,
     years: int = 5,
@@ -424,17 +536,8 @@ def load_insider_transactions(
     warnings: list[str] = []
     cutoff = date.today().replace(year=date.today().year - years)
 
-    cik = str(cik_override or "").strip()
-    if not cik:
-        try:
-            ticker_to_cik = load_sec_ticker_to_cik_map()
-            cik = str(ticker_to_cik.get(ticker_symbol.upper()) or "").strip()
-        except Exception as exc:
-            return pd.DataFrame(), [f"Nepodarilo se nacist SEC mapovani tickeru pro insider transakce: {exc}"]
-    if not cik:
-        return pd.DataFrame(), [f"Ticker {ticker_symbol.upper()} nebyl nalezen v SEC mapovani ticker/CIK."]
-
     rows: list[dict[str, Any]] = []
+    used_yahoo_fallback = False
 
     dataset_rows, dataset_warnings, dataset_until = _load_rows_from_dataset(
         ticker_symbol,
@@ -444,12 +547,31 @@ def load_insider_transactions(
     rows.extend(dataset_rows)
     warnings.extend(dataset_warnings)
 
+    cik = str(cik_override or "").strip()
+    if not cik:
+        try:
+            ticker_to_cik = load_sec_ticker_to_cik_map()
+            cik = str(ticker_to_cik.get(ticker_symbol.upper()) or "").strip()
+        except Exception as exc:
+            cik = ""
+            warnings.append(
+                "Nepodarilo se nacist SEC mapovani tickeru pro nejnovejsi insider filingy. "
+                f"Zobrazuji dostupna data z kvartalnich SEC datasetu. Detail: {exc}"
+            )
+
+    if not cik:
+        warnings.append(
+            f"Ticker {ticker_symbol.upper()} nebyl nalezen v SEC mapovani ticker/CIK. "
+            "Nejnovejsi individualni filings se proto nedotahnou, ale kvartalni SEC datasety se pouziji."
+        )
+
     filings: list[tuple[str, str, str, str]] = []
-    try:
-        filings, filing_warnings = _collect_filings(cik, cutoff)
-        warnings.extend(filing_warnings)
-    except Exception as exc:
-        warnings.append(f"Nepodarilo se pripravit seznam insider filings z SEC pro {ticker_symbol.upper()}: {exc}")
+    if cik:
+        try:
+            filings, filing_warnings = _collect_filings(cik, cutoff)
+            warnings.extend(filing_warnings)
+        except Exception as exc:
+            warnings.append(f"Nepodarilo se pripravit seznam insider filings z SEC pro {ticker_symbol.upper()}: {exc}")
 
     filings = [
         filing
@@ -483,10 +605,20 @@ def load_insider_transactions(
             )
 
     if not rows:
+        yahoo_rows, yahoo_warnings = _load_rows_from_yfinance(
+            ticker_symbol,
+            cutoff,
+            management_only=management_only,
+        )
+        rows.extend(yahoo_rows)
+        warnings.extend(yahoo_warnings)
+        used_yahoo_fallback = bool(yahoo_rows)
+
+    if not rows:
         warnings.append(
             f"Za poslednich {years} let nebyly pro ticker {ticker_symbol.upper()} nalezeny zadne insider transakce SEC Form 4/5."
         )
-        return pd.DataFrame(), list(dict.fromkeys(warnings))
+        return pd.DataFrame(), _compact_warnings(warnings, used_yahoo_fallback)
 
     frame = pd.DataFrame(rows)
     frame["transaction_date"] = pd.to_datetime(frame["transaction_date"], errors="coerce", format="mixed")
@@ -498,7 +630,7 @@ def load_insider_transactions(
         warnings.append(
             f"Za poslednich {years} let nebyly pro ticker {ticker_symbol.upper()} nalezeny zadne insider transakce SEC Form 4/5."
         )
-        return pd.DataFrame(), list(dict.fromkeys(warnings))
+        return pd.DataFrame(), _compact_warnings(warnings, used_yahoo_fallback)
 
     frame["signed_shares"] = frame.apply(
         lambda row: row["shares"]
@@ -507,4 +639,4 @@ def load_insider_transactions(
         axis=1,
     )
     frame.sort_values(["transaction_date", "filing_date"], ascending=[False, False], inplace=True)
-    return frame.reset_index(drop=True), list(dict.fromkeys(warnings))
+    return frame.reset_index(drop=True), _compact_warnings(warnings, used_yahoo_fallback)

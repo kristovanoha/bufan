@@ -116,7 +116,8 @@ def _load_sec_user_agent() -> str:
             pass
 
     return str(
-        os.getenv("SEC_USER_AGENT", "") or "Buffett Analyzer/1.0 (personal analysis app; contact not configured)"
+        os.getenv("SEC_USER_AGENT", "")
+        or "Buffett Analyzer/1.0 personal analysis app https://github.com/kristovanoha/bufan"
     ).strip()
 
 
