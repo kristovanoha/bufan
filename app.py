@@ -126,6 +126,33 @@ def metrics_dataframe(metrics, currency: str | None) -> pd.DataFrame:
     )
 
 
+def dividend_history_dataframe(frame: pd.DataFrame, currency: str | None) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    def format_dividend_currency(value: float | None) -> str:
+        if value is None or pd.isna(value):
+            return "N/A"
+        suffix = f" {currency}" if currency else ""
+        return f"{value:,.2f}{suffix}"
+
+    display_frame = frame.copy()
+    display_frame["Datum dividendy"] = display_frame["dividend_date"].dt.strftime("%d.%m.%Y")
+    display_frame["Castka dividendy"] = display_frame["dividend_amount"].map(format_dividend_currency)
+    display_frame["Cena akcie"] = display_frame["close_price"].map(format_dividend_currency)
+    display_frame["Podil dividendy"] = display_frame["dividend_yield_pct"].map(
+        lambda value: "N/A" if value is None or pd.isna(value) else f"{value:.2f} %"
+    )
+    return display_frame[
+        [
+            "Datum dividendy",
+            "Castka dividendy",
+            "Cena akcie",
+            "Podil dividendy",
+        ]
+    ]
+
+
 def insider_transactions_dataframe(frame: pd.DataFrame, currency: str | None) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
@@ -538,6 +565,42 @@ def get_price_history_chart_data(ticker: str, period: str) -> tuple[pd.DataFrame
     return load_price_history(ticker, period)
 
 
+@st.cache_data(show_spinner="Nacitam dividendovou historii...")
+def get_dividend_history_data(ticker: str) -> tuple[pd.DataFrame, list[str]]:
+    import yfinance as yf
+
+    warnings: list[str] = []
+    try:
+        history = yf.Ticker(ticker.upper()).history(period="max", auto_adjust=False, actions=True)
+    except Exception as exc:
+        return pd.DataFrame(), [f"Nepodarilo se nacist dividendovou historii pro {ticker.upper()}: {exc}"]
+
+    if history.empty or "Dividends" not in history.columns:
+        return pd.DataFrame(), [f"Dividendova historie pro {ticker.upper()} neni v Yahoo Finance dostupna."]
+
+    dividend_frame = history.loc[history["Dividends"].fillna(0) > 0, ["Close", "Dividends"]].copy()
+    if dividend_frame.empty:
+        return pd.DataFrame(), [f"Ticker {ticker.upper()} nema v Yahoo Finance zaznamenane dividendy."]
+
+    dividend_frame.index = pd.to_datetime(dividend_frame.index)
+    dividend_frame = dividend_frame.reset_index()
+    date_column = dividend_frame.columns[0]
+    dividend_frame.rename(
+        columns={
+            date_column: "dividend_date",
+            "Close": "close_price",
+            "Dividends": "dividend_amount",
+        },
+        inplace=True,
+    )
+    dividend_frame["dividend_yield_pct"] = (
+        dividend_frame["dividend_amount"] / dividend_frame["close_price"]
+    ) * 100
+    dividend_frame.sort_values("dividend_date", ascending=False, inplace=True)
+    dividend_frame.reset_index(drop=True, inplace=True)
+    return dividend_frame, warnings
+
+
 @st.cache_data(show_spinner="Nacitam insider transakce ze SEC...")
 def get_insider_transactions_data(
     ticker: str,
@@ -629,25 +692,27 @@ def start_insider_transactions_load(ticker: str, years: int, cik: str | None, ma
 
 
 def render_insider_transactions_tab(company, scope: str) -> None:
-    if scope != "us":
-        st.info("SEC insider transakce jsou v teto verzi dostupne jen pro americke firmy se SEC Form 3/4/5.")
-        return
-
     st.markdown("**Nakupy a prodeje akcii vedenim a dalsimi hlasicimi osobami**")
-    st.caption(
-        "Zdroj: SEC EDGAR Form 3/4/5. Tabulka a graf pracuji s ne-derivativnimi transakcemi hlasenymi insiderem."
-    )
-    st.caption(
-        "Zobrazeni je nastaveno na poslednich 5 let a jen na aktualni vedeni, tedy osoby s roli `Officer` nebo `Director` v SEC filingach."
-    )
+    if scope == "us":
+        st.caption(
+            "Primarni zdroj: SEC EDGAR Form 3/4/5. Kdyz SEC neni dostupne, aplikace pouzije Yahoo Finance insider transakce jako zalozni zdroj."
+        )
+        st.caption(
+            "Zobrazeni je nastaveno na poslednich 5 let a prednostne filtruje aktualni vedeni, tedy osoby s roli `Officer` nebo `Director`."
+        )
+    else:
+        st.caption(
+            "Zdroj: Yahoo Finance insider_transactions. U neamerickych firem byva pokryti slabsi a ne u vsech tickeru jsou data dostupna."
+        )
     cik = company.raw_info.get("sec_cik") if isinstance(company.raw_info, dict) else None
-    state = read_insider_state(company.ticker, 5, cik, True)
+    management_only = scope == "us"
+    state = read_insider_state(company.ticker, 5, cik, management_only)
     if state["frame"] is None and not state["running"] and not state["error"]:
-        start_insider_transactions_load(company.ticker, 5, cik, True)
-        state = read_insider_state(company.ticker, 5, cik, True)
+        start_insider_transactions_load(company.ticker, 5, cik, management_only)
+        state = read_insider_state(company.ticker, 5, cik, management_only)
 
     if state["running"]:
-        st.info("Nacitam insider transakce ze SEC. Tahle sekce se po dokonceni sama obnovi.")
+        st.info("Nacitam insider transakce. Tahle sekce se po dokonceni sama obnovi.")
         time.sleep(2)
         st.rerun()
         return
@@ -662,7 +727,7 @@ def render_insider_transactions_tab(company, scope: str) -> None:
         st.warning(warning)
 
     if insider_frame.empty:
-        st.info("Za poslednich 5 let nejsou pro tuto firmu dostupne insider transakce z SEC.")
+        st.info("Za poslednich 5 let nejsou pro tuto firmu dostupne insider transakce.")
         return
 
     if state["updated_at"]:
@@ -703,7 +768,8 @@ def render_insider_transactions_tab(company, scope: str) -> None:
             key=f"{scope}_insider_movement_filter_{company.ticker}",
         )
 
-    filtered_frame = filtered_frame[filtered_frame["insider_group"] == "Aktualni vedeni"]
+    if scope == "us":
+        filtered_frame = filtered_frame[filtered_frame["insider_group"] == "Aktualni vedeni"]
     if group_mode == "Jen officeri":
         filtered_frame = filtered_frame[
             filtered_frame["relationship"].fillna("").str.contains("Officer", case=False, na=False)
@@ -718,9 +784,10 @@ def render_insider_transactions_tab(company, scope: str) -> None:
     if selected_movements:
         filtered_frame = filtered_frame[filtered_frame["transaction_kind"].isin(selected_movements)]
 
-    st.caption(
-        "Tohle je rychlejsi rezim: tab zobrazuje jen hlasene transakce aktualniho vedeni, ne vsech insider osob."
-    )
+    if scope == "us":
+        st.caption(
+            "Tohle je rychlejsi rezim: tab zobrazuje jen hlasene transakce aktualniho vedeni, ne vsech insider osob."
+        )
 
     if filtered_frame.empty:
         st.warning("Pro zvolene filtry nejsou dostupne zadne insider transakce vedeni.")
@@ -771,6 +838,39 @@ def render_insider_transactions_tab(company, scope: str) -> None:
     )
 
 
+def render_dividends_tab(company) -> None:
+    st.markdown("**Historie dividend**")
+    st.caption(
+        "Zdroj: Yahoo Finance pres yfinance. Yahoo typicky vraci datum dividendove udalosti, nejcasteji ex-dividend date, ne vzdy skutecne payment date."
+    )
+
+    dividend_frame, dividend_warnings = get_dividend_history_data(company.ticker)
+    for warning in dividend_warnings:
+        st.warning(warning)
+
+    if dividend_frame.empty:
+        st.info("Pro tuto firmu neni dividendova historie dostupna.")
+        return
+
+    summary1, summary2, summary3 = st.columns(3)
+    summary1.metric("Pocet dividend", f"{len(dividend_frame):,}".replace(",", " "))
+    summary2.metric(
+        "Posledni dividenda",
+        format_value(dividend_frame.iloc[0]["dividend_amount"], "currency_decimal", company.currency),
+    )
+    summary3.metric(
+        "Posledni podil dividendy",
+        format_percent_points(dividend_frame.iloc[0]["dividend_yield_pct"]),
+    )
+
+    st.dataframe(
+        dividend_history_dataframe(dividend_frame, company.currency),
+        use_container_width=True,
+        hide_index=True,
+        height=620,
+    )
+
+
 def render_single_analysis(analysis, scope: str) -> None:
     company = analysis.company
     current_price = getattr(company, "current_price", None)
@@ -810,7 +910,7 @@ def render_single_analysis(analysis, scope: str) -> None:
 
     detail_view = st.radio(
         "Detail firmy",
-        options=["Prehled", "Metriky", "Insider transakce"],
+        options=["Prehled", "Metriky", "Dividendy", "Insider transakce"],
         horizontal=True,
         label_visibility="collapsed",
         key=f"{scope}_single_detail_view",
@@ -871,6 +971,9 @@ def render_single_analysis(analysis, scope: str) -> None:
             hide_index=True,
             height=620,
         )
+
+    if detail_view == "Dividendy":
+        render_dividends_tab(company)
 
     if detail_view == "Insider transakce":
         render_insider_transactions_tab(company, scope)
