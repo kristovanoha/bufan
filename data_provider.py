@@ -79,6 +79,49 @@ def _derive_free_cash_flow(operating_cash_flow: float | None, capital_expenditur
     )
 
 
+def _load_dividend_yield_fallbacks(ticker: yf.Ticker, current_price: float | None) -> tuple[float | None, float | None]:
+    try:
+        history = ticker.history(period="6y", auto_adjust=False, actions=True)
+    except Exception:
+        return None, None
+
+    if history.empty or "Dividends" not in history.columns or "Close" not in history.columns:
+        return None, None
+
+    dividend_frame = history.loc[history["Dividends"].fillna(0) > 0, ["Close", "Dividends"]].copy()
+    if dividend_frame.empty:
+        return None, None
+
+    dividend_frame.index = pd.to_datetime(dividend_frame.index)
+    if getattr(dividend_frame.index, "tz", None) is not None:
+        dividend_frame.index = dividend_frame.index.tz_localize(None)
+    dividend_frame["Year"] = dividend_frame.index.year
+    dividend_frame["YieldPct"] = (dividend_frame["Dividends"] / dividend_frame["Close"]) * 100
+
+    fallback_last_year_yield = None
+    if current_price not in (None, 0):
+        trailing_cutoff = pd.Timestamp.now().tz_localize(None) - pd.Timedelta(days=365)
+        trailing_dividend = dividend_frame.loc[
+            dividend_frame.index >= trailing_cutoff,
+            "Dividends",
+        ].sum()
+        if trailing_dividend > 0:
+            fallback_last_year_yield = float((trailing_dividend / current_price) * 100)
+
+    annual_yield = (
+        dividend_frame.groupby("Year", as_index=False)["YieldPct"]
+        .sum()
+        .sort_values("Year", ascending=False)
+    )
+    fallback_five_year_avg = None
+    if not annual_yield.empty:
+        latest_five = annual_yield.head(5)
+        if not latest_five.empty:
+            fallback_five_year_avg = float(latest_five["YieldPct"].mean())
+
+    return fallback_last_year_yield, fallback_five_year_avg
+
+
 def load_price_history(ticker_symbol: str, period: str = "5y") -> tuple[pd.DataFrame, list[str]]:
     ticker = yf.Ticker(ticker_symbol.upper())
     warnings: list[str] = []
@@ -163,6 +206,15 @@ def load_company_snapshot(ticker_symbol: str, use_sec_statements: bool = False) 
         if last_year_dividend_yield is not None:
             last_year_dividend_yield *= 100
     five_year_avg_dividend_yield = _normalize_number(_safe_get(info, "fiveYearAvgDividendYield"))
+    fallback_last_year_dividend_yield, fallback_five_year_avg_dividend_yield = _load_dividend_yield_fallbacks(
+        ticker,
+        current_price,
+    )
+    last_year_dividend_yield = _coalesce(last_year_dividend_yield, fallback_last_year_dividend_yield)
+    five_year_avg_dividend_yield = _coalesce(
+        five_year_avg_dividend_yield,
+        fallback_five_year_avg_dividend_yield,
+    )
 
     yahoo_current_ratio = _normalize_number(_safe_get(info, "currentRatio"))
     yahoo_return_on_equity = _normalize_number(_safe_get(info, "returnOnEquity"))
