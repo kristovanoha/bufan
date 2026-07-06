@@ -54,7 +54,7 @@ FRED_DATA_SOURCE_VERSION = "fred_series_v2_" + "_".join(
 CZECH_MACRO_DATA_SOURCE_VERSION = "czech_macro_v1_" + "_".join(
     definition.key for definition in CZECH_SERIES_DEFINITIONS
 )
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.5"
 
 
 st.set_page_config(page_title="Buffett Analyzer", layout="wide")
@@ -96,6 +96,8 @@ def format_value(value: float | str | None, unit: str = "", currency: str | None
         return value
     if unit == "percent":
         return f"{value * 100:.2f} %"
+    if unit == "percent_points":
+        return f"{value:.2f} %"
     if unit == "currency":
         suffix = f" {currency}" if currency else ""
         return f"{value:,.0f}{suffix}"
@@ -2357,7 +2359,9 @@ def render_buffett_workspace(
         st.session_state[f"{scope}_active_buffett_section"] = "Hromadna analyza"
 
     if scope == "us":
-        st.caption("Zdroj dat: cena a zakladni trzni metriky z Yahoo Finance, ucetni vykazy americkych firem z SEC EDGAR API.")
+        st.caption(
+            "Zdroj dat: cena a zakladni trzni metriky z Yahoo Finance, chybejici ucetni data americkych firem se doplnuji z SEC EDGAR API."
+        )
     else:
         st.caption("Zdroj dat: Yahoo Finance pres knihovnu yfinance.")
     selected_ticker = manual_ticker or company_options.get(selected_label, "")
