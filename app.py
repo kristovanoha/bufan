@@ -2419,7 +2419,7 @@ def main() -> None:
     companies = load_companies(Path(__file__).with_name("companies.txt"))
     cz_companies = load_companies(Path(__file__).with_name("companies_cz.txt"))
     buffett_tab, buffet_cz_tab, macro_tab, crypto_tab, crisis_tab, czech_tab = st.tabs(
-        ["Buffett analyza", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin", "Krize", "ČR"]
+        ["Buffett S&P 500", "Buffet CZ", "Makroekonomika (FRED)", "Bitcoin", "Krize", "ČR"]
     )
 
     with buffett_tab:
